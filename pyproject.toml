@@ -1,0 +1,22 @@
+[project]
+name = "abbvisionsystem"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "Duc Le",email = "s4000577@rmit.edu.vn"}
+]
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "streamlit (>=1.44.1,<2.0.0)",
+    "opencv-python (>=4.11.0.86,<5.0.0.0)",
+    "pillow (>=11.2.1,<12.0.0)",
+    "requests (>=2.32.3,<3.0.0)",
+    "matplotlib (>=3.10.1,<4.0.0)",
+    "tensorflow (>=2.19.0,<3.0.0)",
+    "watchdog (>=6.0.0,<7.0.0)"
+]
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
