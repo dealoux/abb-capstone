@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 class TACOModel(BaseModel):
     """Interface for pre-trained TACO waste detection model."""
 
-    def __init__(self, model_path="train_models/ssd_mobilenet_v2_taco_2018_03_29.pb"):
+    def __init__(self, model_path="trained_models/ssd_mobilenet_v2_taco_2018_03_29.pb"):
         super().__init__(model_path)
         self.detection_graph = None
         self.session = None

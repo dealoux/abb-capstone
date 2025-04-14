@@ -1,0 +1,4 @@
+.vscode/
+*.pkl
+.DS_Store
+.env

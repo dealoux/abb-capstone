@@ -1,26 +1,16 @@
-# ASSESSMENT 2: GROUP ASSIGNMENT
+# CAPSTONE: ABB AI Integrated Vision Pro System
 
-# COSC2753 – Machine Learning
+## Advisor: Mr. Dien Duc Uy Man
 
-## Instructor and Tutor: Dr. Bao Nguyen
+## Supervisor: Dr. Nguyen Nguyen
 
-## 1. GitHub repo
+## Group Info and Contribution
 
-https://github.com/CuongNguyen-rmit/MachineLearning_Assignment2
+### Group name: QuadraTech
 
-```bash
-git clone https://github.com/CuongNguyen-rmit/MachineLearning_Assignment2
-cd MachineLearning_Assignment2
-```
-## 2. Dataset & Web Application
-https://rmiteduau.sharepoint.com/sites/MachineLearningAssignment2Group/Shared%20Documents/Forms/AllItems.aspx?id=%2Fsites%2FMachineLearningAssignment2Group%2FShared%20Documents%2FGeneral%2FDataset-Webapplication-submission&p=true&ga=1
-
-## 3. Group Info and Contribution
-### Group name: SG_T2_G2
-| *No.*| *Name*                 | *SID*      | `Score`
-|:----:|:----------------------:|:----------:|:-----:|
-| 1    | Nguyen Nam Cuong       | S3891758   | `10`  
-| 2    | Vo Duy Cuong           | S3941544   | `10`
-| 3    | Nguyen Ngoc Minh       | S3907086   | `10`
-| 4    | Le Minh Duc            | S4000577   | `10`
-| 5    | Le Dinh Ngoc Quynh     | S3791159   | `10`
+| _No._ |        _Name_         |  _SID_   | `Score` |
+| :---: | :-------------------: | :------: | :-----: |
+|   1   |     Pham Hai Nam      | S3806455 |  `10`   |
+|   2   | Duong Hoang Dang Khoi | S3879524 |  `10`   |
+|   3   |     Tran Le Quang     | S3927206 |  `10`   |
+|   4   |      Le Minh Duc      | S4000577 |  `10`   |
