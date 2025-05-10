@@ -6,7 +6,7 @@ import cv2
 from PIL import Image
 import matplotlib.pyplot as plt
 
-from abbvisionsystem.camera.camera import CognexCamera, WebcamCamera
+from abbvisionsystem.camera.camera import CognexCamera, BaslerCamera, WebcamCamera
 from abbvisionsystem.preprocessing.preprocessing import (
     prepare_for_detection,
     apply_image_enhancement,
@@ -152,7 +152,9 @@ def main():
 
         else:  # Camera option
             st.subheader("Camera Configuration")
-            camera_type = st.selectbox("Camera Type", ["Cognex", "Webcam (Fallback)"])
+            camera_type = st.selectbox(
+                "Camera Type", ["Cognex", "Basler", "Webcam (Fallback)"]
+            )
 
             if camera_type == "Cognex":
                 ip_address = st.text_input("Camera IP Address", "192.168.1.100")
@@ -174,6 +176,28 @@ def main():
                     else:
                         st.error(
                             "Failed to connect to camera. Check settings and try again."
+                        )
+            elif camera_type == "Basler":
+                basler_device_index = st.number_input(
+                    "Basler Device Index",
+                    min_value=0,
+                    max_value=10,
+                    value=0,
+                    help="Index of the Basler camera to use (0 for first device)",
+                )
+
+                connect_button = st.button("Connect to Basler Camera")
+
+                if connect_button:
+                    st.session_state.camera = BaslerCamera(
+                        device_index=int(basler_device_index)
+                    )
+
+                    if st.session_state.camera.connect():
+                        st.success("Basler camera connected successfully!")
+                    else:
+                        st.error(
+                            "Failed to connect to Basler camera. Check if the camera is properly connected and Pylon SDK is installed."
                         )
 
             else:  # Webcam

@@ -1563,6 +1563,21 @@ files = [
 diagrams = ["jinja2", "railroad-diagrams"]
 
 [[package]]
+name = "pypylon"
+version = "4.1.0"
+description = "The python wrapper for the Basler pylon Camera Software Suite."
+optional = false
+python-versions = "*"
+groups = ["main"]
+files = [
+    {file = "pypylon-4.1.0-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:08794d28e5f198c0f08fffaa3414a10b247d936fa23aa2ff1ca0420536c2f338"},
+    {file = "pypylon-4.1.0-cp39-abi3-macosx_11_0_x86_64.whl", hash = "sha256:f098e9d10d95b638e99f61625bb0547054c22cd854413c9d9cad1402348df0ad"},
+    {file = "pypylon-4.1.0-cp39-abi3-manylinux_2_31_aarch64.whl", hash = "sha256:54b035b04c7f4c86e9b79207dd00c2805b6dfa14506ca53505bc0b3b72c1795e"},
+    {file = "pypylon-4.1.0-cp39-abi3-manylinux_2_31_x86_64.whl", hash = "sha256:6eaea6c71a0a05da30763e1801b165ffbbdcc590800f3917c979ac5c3b9c53ca"},
+    {file = "pypylon-4.1.0-cp39-abi3-win_amd64.whl", hash = "sha256:d8ef3d5ca6b272490a390b103c73c7c4bb995d6957f70d1179ac6a56bc2adfee"},
+]
+
+[[package]]
 name = "python-dateutil"
 version = "2.9.0.post0"
 description = "Extensions to the standard Python datetime module"
@@ -2213,4 +2228,4 @@ files = [
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12,<3.13"
-content-hash = "307b1b8dd51f317fe27a65c79e1eb83a05dff29a9ecf6127db56f97eeb717def"
+content-hash = "7e5b8153c41c7a79008e0280a945165a9c68815010bc5774e8980f487ab4e97d"
