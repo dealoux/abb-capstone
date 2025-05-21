@@ -12,7 +12,7 @@ from abbvisionsystem.preprocessing.preprocessing import (
     apply_image_enhancement,
 )
 from abbvisionsystem.models.taco_model import TACOModel
-from abbvisionsystem.models.custom_model import CustomModel
+from abbvisionsystem.models.defect_detection_model import DefectDetectionModel
 from abbvisionsystem.utils.visualization import draw_detection_summary
 
 # Set page configuration
@@ -31,13 +31,14 @@ MODEL_BASE_PATH = "trained_models"
 
 
 # Cache the model loading
+# Update the get_model function to include the new defect detection model
 @st.cache_resource
 def get_model(model_type="taco"):
     """Factory function to get appropriate model"""
     # Map of model types to their respective filenames
     model_files = {
         "taco": "ssd_mobilenet_v2_taco_2018_03_29.pb",
-        "custom": "custom_model.h5",
+        "defect": "final_defect_model.h5",
     }
 
     # Check if model type is supported
@@ -53,8 +54,11 @@ def get_model(model_type="taco"):
     # Initialize the appropriate model class
     if model_type == "taco":
         model = TACOModel(model_path=model_path)
-    elif model_type == "custom":
-        model = CustomModel(model_path=model_path)
+    elif model_type == "defect":
+        class_mapping_path = os.path.join(MODEL_BASE_PATH, "class_mapping.json")
+        model = DefectDetectionModel(
+            model_path=model_path, class_mapping_path=class_mapping_path
+        )
 
     # Load the model
     model.load()
@@ -72,11 +76,11 @@ def main():
 
         # Model selection
         model_type = st.selectbox(
-            "Select Model", ["TACO Pre-trained", "Custom Model (when available)"]
+            "Select Model", ["Defect Detection", "TACO Waste Sorting"]
         )
         model_type_map = {
-            "TACO Pre-trained": "taco",
-            "Custom Model (when available)": "custom",
+            "Defect Detection": "defect",
+            "TACO Waste Sorting": "taco",
         }
 
         # Input selection

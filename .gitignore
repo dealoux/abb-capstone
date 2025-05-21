@@ -2,3 +2,7 @@
 *.pkl
 .DS_Store
 .env
+trained_models/
+__pycache__/
+anomalib_data/
+yolo_data/
