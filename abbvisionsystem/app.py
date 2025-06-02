@@ -14,7 +14,8 @@ from abbvisionsystem.preprocessing.preprocessing import (
 from abbvisionsystem.models.taco_model import TACOModel
 from abbvisionsystem.models.defect_detection_model import DefectDetectionModel
 from abbvisionsystem.utils.visualization import draw_detection_summary
-from abbvisionsystem.vision_interface import vision_interface
+from abbvisionsystem.vision_tools.vision_interface import vision_interface
+from abbvisionsystem.camera.camera_interface import camera_calibration_interface
 
 # Set page configuration
 st.set_page_config(page_title="ABB Vision System", page_icon="♻️", layout="wide")
@@ -32,22 +33,38 @@ def main():
     # Navigation
     page = st.sidebar.selectbox(
         "Choose Application",
-        ["🏠 Detection System", "🔍 Vision Tools", "📊 Training Center"],
+        [
+            "🏠 Detection System",
+            "🔍 Vision Tools",
+            "📷 Camera Calibration",
+            "📊 Training Center",
+        ],
     )
 
     if page == "🏠 Detection System":
         detection_system_page()
     elif page == "🔍 Vision Tools":
         vision_interface()
+    elif page == "📷 Camera Calibration":
+        camera_calibration_interface()
     elif page == "📊 Training Center":
         training_center_page()
 
 
 def detection_system_page():
-    """Original detection system interface."""
-    # Title and description
+    """Original detection system interface with calibration integration."""
     st.title("♻️ ABB Vision System")
     st.write("Waste detection system with camera integration")
+
+    # Check calibration status
+    if st.session_state.camera and hasattr(st.session_state.camera, "calibrator"):
+        if st.session_state.camera.calibrator.calibration_result:
+            st.success("📷 Camera is calibrated")
+            scale = st.session_state.camera.calibrator.calibration_result.pixels_per_mm
+            if scale:
+                st.info(f"Scale: {scale:.2f} pixels/mm")
+        else:
+            st.warning("⚠️ Camera not calibrated. Go to Camera Calibration page.")
 
     # ... (rest of your existing detection system code)
     # Keep all the existing functionality from your current app.py
