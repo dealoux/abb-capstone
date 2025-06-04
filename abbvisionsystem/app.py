@@ -1,448 +1,821 @@
+import sys
 import os
-import time
-import streamlit as st
-import numpy as np
 import cv2
-from PIL import Image
-import matplotlib.pyplot as plt
+import numpy as np
+from typing import Optional, List
+from PyQt6.QtWidgets import *
+from PyQt6.QtCore import *
+from PyQt6.QtGui import *
+import json
+from datetime import datetime
 
 from abbvisionsystem.camera.camera import CognexCamera, BaslerCamera, WebcamCamera
+from abbvisionsystem.camera.calibration import CameraCalibrator
 from abbvisionsystem.preprocessing.preprocessing import (
     prepare_for_detection,
     apply_image_enhancement,
 )
 from abbvisionsystem.models.taco_model import TACOModel
 from abbvisionsystem.models.defect_detection_model import DefectDetectionModel
-from abbvisionsystem.utils.visualization import draw_detection_summary
-from abbvisionsystem.vision_tools.vision_interface import vision_interface
-from abbvisionsystem.camera.camera_interface import camera_calibration_interface
+from abbvisionsystem.vision_tools.vision_widget import VisionToolsWidget
+from abbvisionsystem.camera.calibration_widget import CalibrationWidget
 
-# Set page configuration
-st.set_page_config(page_title="ABB Vision System", page_icon="♻️", layout="wide")
 
-# Initialize session state
-if "image" not in st.session_state:
-    st.session_state.image = None
-if "detections" not in st.session_state:
-    st.session_state.detections = None
-if "camera" not in st.session_state:
-    st.session_state.camera = None
+class ABBVisionMainWindow(QMainWindow):
+    """Main application window for ABB Vision System."""
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("ABB Vision System")
+        self.setGeometry(100, 100, 1600, 1000)
+
+        # Application state
+        self.current_image = None
+        self.detections = None
+        self.camera = None
+        self.model = None
+
+        # Setup UI
+        self.setup_ui()
+        self.setup_menu_bar()
+        self.setup_status_bar()
+
+        # Load settings
+        self.load_settings()
+
+    def setup_ui(self):
+        """Setup the main UI layout."""
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+
+        # Main layout
+        main_layout = QVBoxLayout()
+        central_widget.setLayout(main_layout)
+
+        # Create tab widget
+        self.tab_widget = QTabWidget()
+        main_layout.addWidget(self.tab_widget)
+
+        # Add tabs
+        self.add_detection_tab()
+        self.add_vision_tools_tab()
+        self.add_calibration_tab()
+        self.add_training_tab()
+
+    def setup_menu_bar(self):
+        """Setup application menu bar."""
+        menubar = self.menuBar()
+
+        # File menu
+        file_menu = menubar.addMenu("File")
+
+        open_action = QAction("Open Image", self)
+        open_action.setShortcut("Ctrl+O")
+        open_action.triggered.connect(self.open_image)
+        file_menu.addAction(open_action)
+
+        save_action = QAction("Save Results", self)
+        save_action.setShortcut("Ctrl+S")
+        save_action.triggered.connect(self.save_results)
+        file_menu.addAction(save_action)
+
+        file_menu.addSeparator()
+
+        exit_action = QAction("Exit", self)
+        exit_action.setShortcut("Ctrl+Q")
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
+
+        # Camera menu
+        camera_menu = menubar.addMenu("Camera")
+
+        connect_basler = QAction("Connect Basler", self)
+        connect_basler.triggered.connect(self.connect_basler_camera)
+        camera_menu.addAction(connect_basler)
+
+        connect_cognex = QAction("Connect Cognex", self)
+        connect_cognex.triggered.connect(self.connect_cognex_camera)
+        camera_menu.addAction(connect_cognex)
+
+        connect_webcam = QAction("Connect Webcam", self)
+        connect_webcam.triggered.connect(self.connect_webcam)
+        camera_menu.addAction(connect_webcam)
+
+        # Help menu
+        help_menu = menubar.addMenu("Help")
+
+        about_action = QAction("About", self)
+        about_action.triggered.connect(self.show_about)
+        help_menu.addAction(about_action)
+
+    def setup_status_bar(self):
+        """Setup status bar."""
+        self.status_bar = self.statusBar()
+        self.status_bar.showMessage("Ready")
+
+        # Add permanent widgets to status bar
+        self.camera_status = QLabel("Camera: Disconnected")
+        self.model_status = QLabel("Model: None")
+        self.calibration_status = QLabel("Calibration: None")
+
+        self.status_bar.addPermanentWidget(self.camera_status)
+        self.status_bar.addPermanentWidget(self.model_status)
+        self.status_bar.addPermanentWidget(self.calibration_status)
+
+    def add_detection_tab(self):
+        """Add detection system tab."""
+        self.detection_widget = DetectionWidget(self)
+        self.tab_widget.addTab(self.detection_widget, "🏠 Detection System")
+
+    def add_vision_tools_tab(self):
+        """Add vision tools tab."""
+        self.vision_tools_widget = VisionToolsWidget(self)
+        self.tab_widget.addTab(self.vision_tools_widget, "🔍 Vision Tools")
+
+    def add_calibration_tab(self):
+        """Add camera calibration tab."""
+        self.calibration_widget = CalibrationWidget(self)
+        self.tab_widget.addTab(self.calibration_widget, "📷 Camera Calibration")
+
+    def add_training_tab(self):
+        """Add training center tab."""
+        self.training_widget = TrainingWidget(self)
+        self.tab_widget.addTab(self.training_widget, "📊 Training Center")
+
+    # Camera connection methods
+    def connect_basler_camera(self):
+        """Connect to Basler camera."""
+        dialog = BaslerConnectionDialog(self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            device_index = dialog.get_device_index()
+
+            self.camera = BaslerCamera(device_index=device_index)
+            if self.camera.connect():
+                self.camera_status.setText("Camera: Basler Connected")
+                self.status_bar.showMessage("Basler camera connected successfully")
+
+                # Update detection widget
+                self.detection_widget.camera_connected(self.camera)
+            else:
+                QMessageBox.warning(
+                    self, "Connection Failed", "Failed to connect to Basler camera"
+                )
+
+    def connect_cognex_camera(self):
+        """Connect to Cognex camera."""
+        dialog = CognexConnectionDialog(self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            config = dialog.get_config()
+
+            self.camera = CognexCamera(**config)
+            if self.camera.connect():
+                self.camera_status.setText("Camera: Cognex Connected")
+                self.status_bar.showMessage("Cognex camera connected successfully")
+
+                # Update detection widget
+                self.detection_widget.camera_connected(self.camera)
+            else:
+                QMessageBox.warning(
+                    self, "Connection Failed", "Failed to connect to Cognex camera"
+                )
+
+    def connect_webcam(self):
+        """Connect to webcam."""
+        camera_id, ok = QInputDialog.getInt(
+            self, "Webcam Connection", "Camera ID:", 0, 0, 10, 1
+        )
+        if ok:
+            self.camera = WebcamCamera(camera_id=camera_id)
+            if self.camera.connect():
+                self.camera_status.setText("Camera: Webcam Connected")
+                self.status_bar.showMessage("Webcam connected successfully")
+
+                # Update detection widget
+                self.detection_widget.camera_connected(self.camera)
+            else:
+                QMessageBox.warning(
+                    self, "Connection Failed", "Failed to connect to webcam"
+                )
+
+    def open_image(self):
+        """Open image file."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Open Image", "", "Image Files (*.png *.jpg *.jpeg *.bmp *.tiff)"
+        )
+
+        if file_path:
+            image = cv2.imread(file_path)
+            if image is not None:
+                self.current_image = image
+                self.detection_widget.set_image(image)
+                self.status_bar.showMessage(f"Loaded: {os.path.basename(file_path)}")
+            else:
+                QMessageBox.warning(self, "Load Error", "Failed to load image")
+
+    def save_results(self):
+        """Save detection results."""
+        if self.current_image is not None and self.detections is not None:
+            file_path, _ = QFileDialog.getSaveFileName(
+                self, "Save Results", "", "Image Files (*.png *.jpg *.jpeg)"
+            )
+
+            if file_path:
+                # Save logic here
+                self.status_bar.showMessage(f"Results saved to {file_path}")
+
+    def show_about(self):
+        """Show about dialog."""
+        QMessageBox.about(
+            self,
+            "About ABB Vision System",
+            "ABB Vision System v1.0\n\n"
+            "Industrial computer vision system for defect detection\n"
+            "and quality inspection.",
+        )
+
+    def load_settings(self):
+        """Load application settings."""
+        settings = QSettings("ABB", "VisionSystem")
+        geometry = settings.value("geometry")
+        if geometry:
+            self.restoreGeometry(geometry)
+
+    def closeEvent(self, event):
+        """Handle application close."""
+        # Save settings
+        settings = QSettings("ABB", "VisionSystem")
+        settings.setValue("geometry", self.saveGeometry())
+
+        # Disconnect camera
+        if self.camera and self.camera.connected:
+            self.camera.disconnect()
+
+        event.accept()
+
+
+class DetectionWidget(QWidget):
+    """Widget for detection system functionality."""
+
+    def __init__(self, parent):
+        super().__init__()
+        self.parent = parent
+        self.setup_ui()
+        self.load_models()
+
+    def setup_ui(self):
+        """Setup detection UI."""
+        layout = QHBoxLayout()
+        self.setLayout(layout)
+
+        # Left panel - controls
+        control_panel = self.create_control_panel()
+        layout.addWidget(control_panel, 1)
+
+        # Right panel - image display and results
+        display_panel = self.create_display_panel()
+        layout.addWidget(display_panel, 2)
+
+    def create_control_panel(self):
+        """Create control panel."""
+        panel = QGroupBox("Configuration")
+        layout = QVBoxLayout()
+        panel.setLayout(layout)
+
+        # Model selection
+        model_group = QGroupBox("Model Selection")
+        model_layout = QVBoxLayout()
+        model_group.setLayout(model_layout)
+
+        self.model_combo = QComboBox()
+        self.model_combo.addItems(["Defect Detection", "TACO Waste Sorting"])
+        self.model_combo.currentTextChanged.connect(self.model_changed)
+        model_layout.addWidget(QLabel("Select Model:"))
+        model_layout.addWidget(self.model_combo)
+
+        layout.addWidget(model_group)
+
+        # Input source
+        input_group = QGroupBox("Input Source")
+        input_layout = QVBoxLayout()
+        input_group.setLayout(input_layout)
+
+        self.input_radio_upload = QRadioButton("Upload Image")
+        self.input_radio_camera = QRadioButton("Camera")
+        self.input_radio_upload.setChecked(True)
+
+        input_layout.addWidget(self.input_radio_upload)
+        input_layout.addWidget(self.input_radio_camera)
+
+        layout.addWidget(input_group)
+
+        # Image enhancement
+        enhancement_group = QGroupBox("Image Enhancement")
+        enhancement_layout = QFormLayout()
+        enhancement_group.setLayout(enhancement_layout)
+
+        self.brightness_slider = QSlider(Qt.Orientation.Horizontal)
+        self.brightness_slider.setRange(-100, 100)
+        self.brightness_slider.setValue(0)
+        self.brightness_label = QLabel("0")
+        self.brightness_slider.valueChanged.connect(
+            lambda v: self.brightness_label.setText(str(v))
+        )
+
+        brightness_layout = QHBoxLayout()
+        brightness_layout.addWidget(self.brightness_slider)
+        brightness_layout.addWidget(self.brightness_label)
+
+        self.contrast_slider = QSlider(Qt.Orientation.Horizontal)
+        self.contrast_slider.setRange(-100, 100)
+        self.contrast_slider.setValue(0)
+        self.contrast_label = QLabel("0")
+        self.contrast_slider.valueChanged.connect(
+            lambda v: self.contrast_label.setText(str(v))
+        )
+
+        contrast_layout = QHBoxLayout()
+        contrast_layout.addWidget(self.contrast_slider)
+        contrast_layout.addWidget(self.contrast_label)
+
+        enhancement_layout.addRow("Brightness:", brightness_layout)
+        enhancement_layout.addRow("Contrast:", contrast_layout)
+
+        layout.addWidget(enhancement_group)
+
+        # Detection settings
+        detection_group = QGroupBox("Detection Settings")
+        detection_layout = QFormLayout()
+        detection_group.setLayout(detection_layout)
+
+        self.confidence_slider = QSlider(Qt.Orientation.Horizontal)
+        self.confidence_slider.setRange(10, 100)
+        self.confidence_slider.setValue(50)
+        self.confidence_label = QLabel("0.50")
+        self.confidence_slider.valueChanged.connect(
+            lambda v: self.confidence_label.setText(f"{v/100:.2f}")
+        )
+
+        confidence_layout = QHBoxLayout()
+        confidence_layout.addWidget(self.confidence_slider)
+        confidence_layout.addWidget(self.confidence_label)
+
+        detection_layout.addRow("Confidence:", confidence_layout)
+
+        layout.addWidget(detection_group)
+
+        # Action buttons
+        button_group = QGroupBox("Actions")
+        button_layout = QVBoxLayout()
+        button_group.setLayout(button_layout)
+
+        self.load_image_btn = QPushButton("Load Image")
+        self.load_image_btn.clicked.connect(self.load_image)
+        button_layout.addWidget(self.load_image_btn)
+
+        self.capture_btn = QPushButton("Capture from Camera")
+        self.capture_btn.clicked.connect(self.capture_image)
+        self.capture_btn.setEnabled(False)
+        button_layout.addWidget(self.capture_btn)
+
+        self.detect_btn = QPushButton("Run Detection")
+        self.detect_btn.clicked.connect(self.run_detection)
+        self.detect_btn.setEnabled(False)
+        button_layout.addWidget(self.detect_btn)
+
+        self.save_btn = QPushButton("Save Results")
+        self.save_btn.clicked.connect(self.save_results)
+        self.save_btn.setEnabled(False)
+        button_layout.addWidget(self.save_btn)
+
+        layout.addWidget(button_group)
+
+        # Camera status
+        self.camera_status_group = QGroupBox("Camera Status")
+        camera_status_layout = QVBoxLayout()
+        self.camera_status_group.setLayout(camera_status_layout)
+
+        self.camera_status_label = QLabel("No camera connected")
+        camera_status_layout.addWidget(self.camera_status_label)
+
+        layout.addWidget(self.camera_status_group)
+
+        layout.addStretch()
+        return panel
+
+    def create_display_panel(self):
+        """Create display panel."""
+        panel = QWidget()
+        layout = QVBoxLayout()
+        panel.setLayout(layout)
+
+        # Create tab widget for different views
+        self.display_tabs = QTabWidget()
+        layout.addWidget(self.display_tabs)
+
+        # Original image tab
+        self.original_tab = ImageDisplayWidget()
+        self.display_tabs.addTab(self.original_tab, "Original Image")
+
+        # Results tab
+        self.results_tab = ResultsDisplayWidget()
+        self.display_tabs.addTab(self.results_tab, "Detection Results")
+
+        # Enhanced image tab
+        self.enhanced_tab = ImageDisplayWidget()
+        self.display_tabs.addTab(self.enhanced_tab, "Enhanced Image")
+
+        return panel
+
+    def load_models(self):
+        """Load available models."""
+        try:
+            # This would be your model loading logic
+            self.parent.status_bar.showMessage("Models loaded successfully")
+        except Exception as e:
+            QMessageBox.warning(
+                self, "Model Loading Error", f"Failed to load models: {str(e)}"
+            )
+
+    def model_changed(self, model_name):
+        """Handle model selection change."""
+        model_map = {"Defect Detection": "defect", "TACO Waste Sorting": "taco"}
+
+        try:
+            # Load the selected model (implement your model loading logic here)
+            self.parent.status_bar.showMessage(f"Loaded model: {model_name}")
+            self.parent.model_status.setText(f"Model: {model_name}")
+        except Exception as e:
+            QMessageBox.warning(self, "Model Error", f"Failed to load model: {str(e)}")
+
+    def camera_connected(self, camera):
+        """Handle camera connection."""
+        self.camera = camera
+        self.capture_btn.setEnabled(True)
+        self.camera_status_label.setText(f"Connected: {type(camera).__name__}")
+
+    def set_image(self, image):
+        """Set current image."""
+        self.parent.current_image = image
+        self.original_tab.set_image(image)
+        self.detect_btn.setEnabled(True)
+
+        # Apply enhancements and show in enhanced tab
+        enhanced = self.apply_enhancements(image)
+        self.enhanced_tab.set_image(enhanced)
+
+    def load_image(self):
+        """Load image from file."""
+        self.parent.open_image()
+
+    def capture_image(self):
+        """Capture image from camera."""
+        if self.camera and self.camera.connected:
+            image = self.camera.capture_image()
+            if image is not None:
+                self.set_image(image)
+                self.parent.status_bar.showMessage("Image captured successfully")
+            else:
+                QMessageBox.warning(self, "Capture Error", "Failed to capture image")
+
+    def apply_enhancements(self, image):
+        """Apply image enhancements."""
+        brightness = self.brightness_slider.value()
+        contrast = self.contrast_slider.value()
+
+        # Apply your enhancement logic here
+        enhanced = apply_image_enhancement(image, brightness, contrast)
+        return enhanced
+
+    def run_detection(self):
+        """Run object detection."""
+        if self.parent.current_image is None:
+            QMessageBox.warning(self, "No Image", "Please load an image first")
+            return
+
+        # Show progress dialog
+        progress = QProgressDialog("Running detection...", "Cancel", 0, 0, self)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.show()
+
+        try:
+            # Apply enhancements
+            enhanced = self.apply_enhancements(self.parent.current_image)
+
+            # Prepare for detection
+            detection_image = prepare_for_detection(enhanced)
+
+            # Run detection (implement your detection logic here)
+            # detections = self.parent.model.predict(detection_image)
+
+            # For now, simulate detection
+            detections = {"num_detections": 0, "scores": [], "classes": []}
+
+            self.parent.detections = detections
+            self.results_tab.set_results(self.parent.current_image, detections)
+            self.save_btn.setEnabled(True)
+
+            self.parent.status_bar.showMessage("Detection completed")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Detection Error", f"Detection failed: {str(e)}")
+        finally:
+            progress.close()
+
+    def save_results(self):
+        """Save detection results."""
+        self.parent.save_results()
+
+
+class ImageDisplayWidget(QWidget):
+    """Widget for displaying images."""
+
+    def __init__(self):
+        super().__init__()
+        self.setup_ui()
+        self.image = None
+
+    def setup_ui(self):
+        """Setup UI."""
+        layout = QVBoxLayout()
+        self.setLayout(layout)
+
+        # Image label
+        self.image_label = QLabel()
+        self.image_label.setMinimumSize(640, 480)
+        self.image_label.setStyleSheet("border: 1px solid gray")
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_label.setText("No image loaded")
+        self.image_label.setScaledContents(True)
+
+        # Scroll area
+        scroll_area = QScrollArea()
+        scroll_area.setWidget(self.image_label)
+        scroll_area.setWidgetResizable(True)
+
+        layout.addWidget(scroll_area)
+
+        # Image info
+        self.info_label = QLabel("Image info will appear here")
+        layout.addWidget(self.info_label)
+
+    def set_image(self, cv_image):
+        """Set image to display."""
+        self.image = cv_image
+
+        # Convert CV image to Qt format
+        if len(cv_image.shape) == 3:
+            rgb_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB)
+            h, w, ch = rgb_image.shape
+            bytes_per_line = ch * w
+            qt_image = QImage(
+                rgb_image.data, w, h, bytes_per_line, QImage.Format.Format_RGB888
+            )
+        else:
+            h, w = cv_image.shape
+            qt_image = QImage(cv_image.data, w, h, QImage.Format.Format_Grayscale8)
+
+        # Create pixmap and set to label
+        pixmap = QPixmap.fromImage(qt_image)
+        self.image_label.setPixmap(pixmap)
+
+        # Update info
+        self.info_label.setText(f"Size: {w}×{h}, Channels: {len(cv_image.shape)}")
+
+
+class ResultsDisplayWidget(QWidget):
+    """Widget for displaying detection results."""
+
+    def __init__(self):
+        super().__init__()
+        self.setup_ui()
+
+    def setup_ui(self):
+        """Setup UI."""
+        layout = QVBoxLayout()
+        self.setLayout(layout)
+
+        # Results image
+        self.image_widget = ImageDisplayWidget()
+        layout.addWidget(self.image_widget)
+
+        # Results table
+        self.results_table = QTableWidget()
+        self.results_table.setColumnCount(3)
+        self.results_table.setHorizontalHeaderLabels(
+            ["Object Type", "Confidence", "Location"]
+        )
+        self.results_table.setMaximumHeight(200)
+        layout.addWidget(self.results_table)
+
+        # Summary
+        self.summary_label = QLabel("No detections")
+        layout.addWidget(self.summary_label)
+
+    def set_results(self, image, detections):
+        """Set detection results."""
+        # Display image with detection boxes (implement visualization logic)
+        self.image_widget.set_image(image)
+
+        # Update table
+        num_detections = detections.get("num_detections", 0)
+        self.results_table.setRowCount(num_detections)
+
+        # Update summary
+        self.summary_label.setText(f"Total detections: {num_detections}")
+
+
+class TrainingWidget(QWidget):
+    """Widget for training functionality."""
+
+    def __init__(self, parent):
+        super().__init__()
+        self.parent = parent
+        self.setup_ui()
+
+    def setup_ui(self):
+        """Setup training UI."""
+        layout = QVBoxLayout()
+        self.setLayout(layout)
+
+        # Training type selection
+        type_group = QGroupBox("Training Type")
+        type_layout = QVBoxLayout()
+        type_group.setLayout(type_layout)
+
+        self.training_combo = QComboBox()
+        self.training_combo.addItems(
+            [
+                "Pattern Templates",
+                "Defect Classification",
+                "Blob Detection",
+                "Custom Models",
+            ]
+        )
+        type_layout.addWidget(self.training_combo)
+
+        layout.addWidget(type_group)
+
+        # Training content (implement specific training interfaces)
+        self.training_stack = QStackedWidget()
+        layout.addWidget(self.training_stack)
+
+        # Add different training interfaces
+        self.add_pattern_training()
+        self.add_defect_training()
+        self.add_blob_training()
+        self.add_custom_training()
+
+        # Connect combo box to stack
+        self.training_combo.currentIndexChanged.connect(
+            self.training_stack.setCurrentIndex
+        )
+
+    def add_pattern_training(self):
+        """Add pattern training interface."""
+        widget = QWidget()
+        layout = QVBoxLayout()
+        widget.setLayout(layout)
+
+        layout.addWidget(QLabel("Pattern Template Training"))
+        layout.addWidget(
+            QLabel("Upload training images and configure pattern templates")
+        )
+
+        # Add your pattern training UI here
+
+        self.training_stack.addWidget(widget)
+
+    def add_defect_training(self):
+        """Add defect training interface."""
+        widget = QWidget()
+        layout = QVBoxLayout()
+        widget.setLayout(layout)
+
+        layout.addWidget(QLabel("Defect Detection Training"))
+        layout.addWidget(QLabel("Train models to detect defects"))
+
+        # Add your defect training UI here
+
+        self.training_stack.addWidget(widget)
+
+    def add_blob_training(self):
+        """Add blob training interface."""
+        widget = QWidget()
+        layout = QVBoxLayout()
+        widget.setLayout(layout)
+
+        layout.addWidget(QLabel("Blob Detection Configuration"))
+        layout.addWidget(QLabel("Configure blob detection parameters"))
+
+        # Add your blob training UI here
+
+        self.training_stack.addWidget(widget)
+
+    def add_custom_training(self):
+        """Add custom training interface."""
+        widget = QWidget()
+        layout = QVBoxLayout()
+        widget.setLayout(layout)
+
+        layout.addWidget(QLabel("Custom Model Training"))
+        layout.addWidget(QLabel("Train custom computer vision models"))
+
+        # Add your custom training UI here
+
+        self.training_stack.addWidget(widget)
+
+
+# Dialog classes for camera connections
+class BaslerConnectionDialog(QDialog):
+    """Dialog for Basler camera connection."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Connect Basler Camera")
+        self.setup_ui()
+
+    def setup_ui(self):
+        """Setup dialog UI."""
+        layout = QFormLayout()
+        self.setLayout(layout)
+
+        self.device_index = QSpinBox()
+        self.device_index.setRange(0, 10)
+        layout.addRow("Device Index:", self.device_index)
+
+        # Buttons
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addRow(button_box)
+
+    def get_device_index(self):
+        """Get selected device index."""
+        return self.device_index.value()
+
+
+class CognexConnectionDialog(QDialog):
+    """Dialog for Cognex camera connection."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Connect Cognex Camera")
+        self.setup_ui()
+
+    def setup_ui(self):
+        """Setup dialog UI."""
+        layout = QFormLayout()
+        self.setLayout(layout)
+
+        self.ip_address = QLineEdit("192.168.1.100")
+        self.port = QLineEdit("80")
+        self.username = QLineEdit()
+        self.password = QLineEdit()
+        self.password.setEchoMode(QLineEdit.EchoMode.Password)
+
+        layout.addRow("IP Address:", self.ip_address)
+        layout.addRow("Port:", self.port)
+        layout.addRow("Username:", self.username)
+        layout.addRow("Password:", self.password)
+
+        # Buttons
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addRow(button_box)
+
+    def get_config(self):
+        """Get connection configuration."""
+        return {
+            "ip_address": self.ip_address.text(),
+            "port": self.port.text(),
+            "username": self.username.text() or None,
+            "password": self.password.text() or None,
+        }
 
 
 def main():
-    # Navigation
-    page = st.sidebar.selectbox(
-        "Choose Application",
-        [
-            "🏠 Detection System",
-            "🔍 Vision Tools",
-            "📷 Camera Calibration",
-            "📊 Training Center",
-        ],
-    )
+    """Main application entry point."""
+    app = QApplication(sys.argv)
 
-    if page == "🏠 Detection System":
-        detection_system_page()
-    elif page == "🔍 Vision Tools":
-        vision_interface()
-    elif page == "📷 Camera Calibration":
-        camera_calibration_interface()
-    elif page == "📊 Training Center":
-        training_center_page()
+    # Set application properties
+    app.setApplicationName("ABB Vision System")
+    app.setApplicationVersion("1.0")
+    app.setOrganizationName("ABB")
 
+    # Set application style
+    app.setStyle("Fusion")
 
-# Base path for all models
-MODEL_BASE_PATH = "trained_models"
+    # Create and show main window
+    window = ABBVisionMainWindow()
+    window.show()
 
-
-# Cache the model loading
-# Update the get_model function to include the new defect detection model
-@st.cache_resource
-def get_model(model_type="taco"):
-    """Factory function to get appropriate model"""
-    # Map of model types to their respective filenames
-    model_files = {
-        "taco": "ssd_mobilenet_v2_taco_2018_03_29.pb",
-        "defect": "final_defect_model.h5",
-    }
-
-    # Check if model type is supported
-    if model_type not in model_files:
-        raise ValueError(f"Unknown model type: {model_type}")
-
-    # Get the appropriate filename
-    filename = model_files[model_type]
-
-    # Construct full path
-    model_path = os.path.join(MODEL_BASE_PATH, filename)
-
-    # Initialize the appropriate model class
-    if model_type == "taco":
-        model = TACOModel(model_path=model_path)
-    elif model_type == "defect":
-        class_mapping_path = os.path.join(MODEL_BASE_PATH, "class_mapping.json")
-        model = DefectDetectionModel(
-            model_path=model_path, class_mapping_path=class_mapping_path
-        )
-
-    # Load the model
-    model.load()
-    return model
-
-
-def detection_system_page():
-    """Original detection system interface with calibration integration."""
-    st.title("♻️ ABB Vision System")
-    st.write("Defect Detection system with camera integration")
-
-    # Check calibration status
-    if st.session_state.camera and hasattr(st.session_state.camera, "calibrator"):
-        if st.session_state.camera.calibrator.calibration_result:
-            st.success("📷 Camera is calibrated")
-            scale = st.session_state.camera.calibrator.calibration_result.pixels_per_mm
-            if scale:
-                st.info(f"Scale: {scale:.2f} pixels/mm")
-        else:
-            st.warning("⚠️ Camera not calibrated. Go to Camera Calibration page.")
-
-    # ... (rest of your existing detection system code)
-    # Keep all the existing functionality from your current app.py
-    # create sidebar
-    with st.sidebar:
-        st.header("Configuration")
-
-        # Model selection
-        model_type = st.selectbox(
-            "Select Model", ["Defect Detection", "TACO Waste Sorting"]
-        )
-        model_type_map = {
-            "Defect Detection": "defect",
-            "TACO Waste Sorting": "taco",
-        }
-
-        # Input selection
-        input_option = st.radio(
-            "Select Input Source", ["Upload Image", "Camera Integration"]
-        )
-
-        # Image enhancement options
-        st.subheader("Image Enhancement")
-        brightness = st.slider("Brightness", -100, 100, 0)
-        contrast = st.slider("Contrast", -100, 100, 0)
-
-        # Detection settings
-        st.subheader("Detection Settings")
-        confidence_threshold = st.slider("Confidence Threshold", 0.1, 1.0, 0.5, 0.05)
-
-        # Apply enhancements button
-        enhance_button = st.button("Apply Settings")
-
-    # Load the selected model
-    try:
-        model = get_model(model_type=model_type_map[model_type])
-    except Exception as e:
-        if "Custom Model" in model_type:
-            st.error(
-                "Custom model not available yet. Please use the TACO pre-trained model."
-            )
-            model = get_model(model_type="taco")
-        else:
-            st.error(f"Error loading model: {str(e)}")
-            return
-
-    # Main content area with two columns
-    col1, col2 = st.columns(2)
-
-    # Input handling
-    with col1:
-        st.subheader("Input Image")
-
-        if input_option == "Upload Image":
-            uploaded_file = st.file_uploader(
-                "Choose an image...", type=["jpg", "jpeg", "png"]
-            )
-
-            if uploaded_file is not None:
-                # Convert uploaded file to image
-                file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-                image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-
-                # Display the uploaded image
-                st.session_state.image = image
-                st.image(
-                    cv2.cvtColor(image, cv2.COLOR_BGR2RGB), caption="Uploaded Image"
-                )
-
-                if enhance_button or st.session_state.detections is None:
-                    # Apply enhancements if requested
-                    enhanced_image = apply_image_enhancement(
-                        image, brightness, contrast
-                    )
-
-                    # Prepare for detection
-                    detection_image = prepare_for_detection(enhanced_image)
-
-                    # Run detection
-                    detections = model.predict(detection_image)
-
-                    if detections is not None:
-                        st.session_state.detections = detections
-                        st.success("Detection completed successfully!")
-                    else:
-                        st.error("Failed to perform detection on the image.")
-
-        else:  # Camera option
-            st.subheader("Camera Configuration")
-            camera_type = st.selectbox(
-                "Camera Type", ["Cognex", "Basler", "Webcam (Fallback)"]
-            )
-
-            if camera_type == "Cognex":
-                ip_address = st.text_input("Camera IP Address", "192.168.1.100")
-                port = st.text_input("Port", "80")
-                username = st.text_input("Username (if required)")
-                password = st.text_input("Password (if required)", type="password")
-
-                connect_button = st.button("Connect to Camera")
-                if connect_button:
-                    st.session_state.camera = CognexCamera(
-                        ip_address=ip_address,
-                        port=port,
-                        username=username if username else None,
-                        password=password if password else None,
-                    )
-
-                    if st.session_state.camera.connect():
-                        st.success("Camera connected successfully!")
-                    else:
-                        st.error(
-                            "Failed to connect to camera. Check settings and try again."
-                        )
-            elif camera_type == "Basler":
-                basler_device_index = st.number_input(
-                    "Basler Device Index",
-                    min_value=0,
-                    max_value=10,
-                    value=0,
-                    help="Index of the Basler camera to use (0 for first device)",
-                )
-
-                connect_button = st.button("Connect to Basler Camera")
-
-                if connect_button:
-                    st.session_state.camera = BaslerCamera(
-                        device_index=int(basler_device_index)
-                    )
-
-                    if st.session_state.camera.connect():
-                        st.success("Basler camera connected successfully!")
-                    else:
-                        st.error(
-                            "Failed to connect to Basler camera. Check if the camera is properly connected and Pylon SDK is installed."
-                        )
-
-            else:  # Webcam
-                webcam_id = st.number_input(
-                    "Webcam ID", min_value=0, max_value=10, value=0
-                )
-                connect_button = st.button("Connect to Webcam")
-
-                if connect_button:
-                    st.session_state.camera = WebcamCamera(camera_id=int(webcam_id))
-                    if st.session_state.camera.connect():
-                        st.success("Webcam connected successfully!")
-                    else:
-                        st.error("Failed to connect to webcam.")
-
-            # Capture button
-            if st.session_state.camera and st.session_state.camera.connected:
-                if st.button("Capture and Detect"):
-                    image = st.session_state.camera.capture_image()
-
-                    if image is not None:
-                        # Store and display the captured image
-                        st.session_state.image = image
-                        st.image(
-                            cv2.cvtColor(image, cv2.COLOR_BGR2RGB),
-                            caption="Captured Image",
-                        )
-
-                        # Apply enhancements
-                        enhanced_image = apply_image_enhancement(
-                            image, brightness, contrast
-                        )
-
-                        # Prepare for detection
-                        detection_image = prepare_for_detection(enhanced_image)
-
-                        # Run detection
-                        detections = model.predict(detection_image)
-
-                        if detections is not None:
-                            st.session_state.detections = detections
-                            st.success("Detection completed successfully!")
-                        else:
-                            st.error("Failed to perform detection on the image.")
-                    else:
-                        st.error("Failed to capture image from camera.")
-
-    # Results display
-    with col2:
-        st.subheader("Detection Results")
-
-        if (
-            st.session_state.image is not None
-            and st.session_state.detections is not None
-        ):
-            # Visualize detections on the image
-            image_with_boxes = model.visualize_detections(
-                cv2.cvtColor(st.session_state.image, cv2.COLOR_BGR2RGB),
-                st.session_state.detections,
-                threshold=confidence_threshold,
-            )
-
-            # Display image with detection boxes
-            st.image(image_with_boxes, caption="Detection Results")
-
-            # Display detection summary
-            draw_detection_summary(
-                model, st.session_state.detections, confidence_threshold
-            )
-
-            # Option to save result
-            if st.button("Save Results"):
-                # Create results directory if it doesn't exist
-                os.makedirs("results", exist_ok=True)
-
-                # Save image with bounding boxes
-                result_path = os.path.join(
-                    "results", f"detection_{int(time.time())}.jpg"
-                )
-                cv2.imwrite(
-                    result_path, cv2.cvtColor(image_with_boxes, cv2.COLOR_RGB2BGR)
-                )
-
-                st.success(f"Results saved to {result_path}")
-
-
-def training_center_page():
-    """Training center for creating and managing vision models."""
-    st.title("📊 Vision Training Center")
-    st.write("Train and manage computer vision models")
-
-    training_type = st.selectbox(
-        "Training Type",
-        [
-            "Pattern Templates",
-            "Defect Classification",
-            "Blob Detection",
-            "Custom Models",
-        ],
-    )
-
-    if training_type == "Pattern Templates":
-        pattern_training_interface()
-    elif training_type == "Defect Classification":
-        defect_training_interface()
-    elif training_type == "Blob Detection":
-        blob_training_interface()
-    elif training_type == "Custom Models":
-        custom_model_interface()
-
-
-def pattern_training_interface():
-    """Interface for training pattern templates."""
-    st.header("🎯 Pattern Template Training")
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.subheader("Dataset Management")
-
-        # Upload training images
-        uploaded_files = st.file_uploader(
-            "Upload Training Images",
-            type=["jpg", "jpeg", "png", "bmp"],
-            accept_multiple_files=True,
-        )
-
-        if uploaded_files:
-            st.success(f"Uploaded {len(uploaded_files)} images")
-
-            # Show sample images
-            for i, file in enumerate(uploaded_files[:3]):  # Show first 3
-                file_bytes = np.asarray(bytearray(file.read()), dtype=np.uint8)
-                image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-                st.image(
-                    cv2.cvtColor(image, cv2.COLOR_BGR2RGB),
-                    caption=f"Sample {i+1}",
-                    width=200,
-                )
-
-    with col2:
-        st.subheader("Training Configuration")
-
-        template_name = st.text_input("Template Name", "template_1")
-
-        # ROI definition (simplified)
-        st.write("Define template region:")
-        roi_method = st.radio("ROI Method", ["Manual Input", "Auto Detect"])
-
-        if roi_method == "Manual Input":
-            roi_x = st.number_input("X", min_value=0, value=50)
-            roi_y = st.number_input("Y", min_value=0, value=50)
-            roi_w = st.number_input("Width", min_value=1, value=100)
-            roi_h = st.number_input("Height", min_value=1, value=100)
-
-        # Training parameters
-        min_features = st.slider("Min Features", 10, 100, 20)
-
-        if st.button("Train Template"):
-            if uploaded_files:
-                # Training logic would go here
-                st.success(f"Template '{template_name}' trained successfully!")
-                st.info("In a full implementation, this would:")
-                st.write("- Extract features from all uploaded images")
-                st.write("- Create robust template representation")
-                st.write("- Save template for future use")
-            else:
-                st.error("Please upload training images first")
-
-
-def defect_training_interface():
-    """Interface for training defect detection models."""
-    st.header("🔍 Defect Detection Training")
-
-    st.info("This interface would provide:")
-    st.write("- Upload normal and defective samples")
-    st.write("- Configure training parameters")
-    st.write("- Monitor training progress")
-    st.write("- Validate model performance")
-    st.write("- Export trained models")
-
-
-def blob_training_interface():
-    """Interface for configuring blob detection."""
-    st.header("🔴 Blob Detection Configuration")
-
-    st.info("This interface would provide:")
-    st.write("- Upload sample images with known blobs")
-    st.write("- Tune detection parameters interactively")
-    st.write("- Validate detection accuracy")
-    st.write("- Save optimized configurations")
-
-
-def custom_model_interface():
-    """Interface for custom model training."""
-    st.header("🤖 Custom Model Training")
-
-    st.info("This interface would provide:")
-    st.write("- Upload custom datasets")
-    st.write("- Choose model architectures")
-    st.write("- Configure training hyperparameters")
-    st.write("- Monitor training metrics")
-    st.write("- Deploy trained models")
+    return app.exec()
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
