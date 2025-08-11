@@ -1,0 +1,14 @@
+
+# YOLOv8 dataset configuration
+path: /Users/ducle/Library/CloudStorage/OneDrive-RMITUniversity/Courses/OENG1183 - Capstone A/abb-capstone/yolo_dataset
+train: images/train
+val: images/val
+test: images/test
+
+# Classes
+names:
+  0: normal
+  1: defect
+
+# Number of classes
+nc: 2

@@ -1,123 +1,111 @@
+"""Detection system UI page with multi-object support"""
+
 import os
 import time
 import streamlit as st
 import numpy as np
 import cv2
-import pandas as pd
-import json
 
-from abbvisionsystem.models.defect_detection_model import ObjectDefectDetectionModel
 from abbvisionsystem.models.taco_model import TACOModel
+from abbvisionsystem.models.defect_detection_model import DefectDetectionModel
+from abbvisionsystem.models.yolo_model import YOLODefectModel
+
+from abbvisionsystem.camera.camera import CognexCamera, BaslerCamera, WebcamCamera
 from abbvisionsystem.preprocessing.preprocessing import (
     prepare_for_detection,
     apply_image_enhancement,
 )
 from abbvisionsystem.utils.visualization import draw_detection_summary
 
-# Base path for all models
-MODEL_BASE_PATH = "trained_models"
 
+def detection_system_page():
+    """Main detection system interface with multi-object support."""
+    st.title("♻️ ABB Vision System")
+    st.write("Multi-object defect detection system with camera integration")
 
-@st.cache_resource
-def get_model(model_type="object_defect"):
-    """Factory function to get appropriate model - only object-based models."""
-    model_files = {
-        "taco": "ssd_mobilenet_v2_taco_2018_03_29.pb",
-        "object_defect": "object_defect_classifier.h5",
-    }
-
-    if model_type not in model_files:
-        raise ValueError(f"Unknown model type: {model_type}")
-
-    filename = model_files[model_type]
-    model_path = os.path.join(MODEL_BASE_PATH, filename)
-
-    if model_type == "taco":
-        model = TACOModel(model_path=model_path)
-    elif model_type == "object_defect":
-        class_mapping_path = os.path.join(MODEL_BASE_PATH, "class_mapping.json")
-        model = ObjectDefectDetectionModel(
-            classifier_path=model_path, class_mapping_path=class_mapping_path
-        )
-
-    model.load()
-    return model
-
-
-def detection_page():
-    """Object-based detection page."""
-    st.title("🎯 Object-Based Defect Detection")
-    st.write("Detect and classify individual objects for defects")
+    # Check calibration status
+    if st.session_state.camera and hasattr(st.session_state.camera, "calibrator"):
+        if st.session_state.camera.calibrator.calibration_result:
+            st.success("📷 Camera is calibrated")
+            scale = st.session_state.camera.calibrator.calibration_result.pixels_per_mm
+            if scale:
+                st.info(f"Scale: {scale:.2f} pixels/mm")
+        else:
+            st.warning("⚠️ Camera not calibrated. Go to Camera Calibration page.")
 
     # Sidebar configuration
     with st.sidebar:
-        st.header("⚙️ Configuration")
+        st.header("Configuration")
 
-        # Model selection - only object-based models
+        # Model selection - Updated for multi-object detection
         model_type = st.selectbox(
-            "Select Model",
-            ["Object Defect Detection", "TACO Waste Sorting"],
-            help="Choose the detection model to use",
+            "Select Detection Model",
+            [
+                "YOLO Defect Detection (Multi-object)",
+                "ResNet Defect Classification (Single object)",
+                "TACO Waste Sorting",
+            ],
         )
+
         model_type_map = {
-            "Object Defect Detection": "object_defect",
+            "YOLO Defect Detection (Multi-object)": "defect_yolo",
+            "ResNet Defect Classification (Single object)": "defect_classification",
             "TACO Waste Sorting": "taco",
         }
 
+        # Input selection
+        input_option = st.radio(
+            "Select Input Source", ["Upload Image", "Camera Integration"]
+        )
+
         # Image enhancement options
-        st.subheader("🎨 Image Enhancement")
+        st.subheader("Image Enhancement")
         brightness = st.slider("Brightness", -100, 100, 0)
         contrast = st.slider("Contrast", -100, 100, 0)
 
         # Detection settings
-        st.subheader("🔍 Detection Settings")
-        confidence_threshold = st.slider("Confidence Threshold", 0.1, 1.0, 0.5, 0.05)
+        st.subheader("Detection Settings")
+        confidence_threshold = st.slider("Confidence Threshold", 0.1, 1.0, 0.25, 0.05)
 
-        # Object detection parameters
-        st.subheader("📐 Object Parameters")
-        min_area = st.slider("Min Object Area", 500, 5000, 1000)
-        max_area = st.slider("Max Object Area", 10000, 100000, 50000)
+        # Multi-object specific settings
+        if "YOLO" in model_type:
+            iou_threshold = st.slider("IoU Threshold (NMS)", 0.1, 1.0, 0.45, 0.05)
+            max_detections = st.slider("Max Detections", 1, 50, 20)
 
-        # Apply settings button
-        apply_settings = st.button("🔄 Apply Settings", use_container_width=True)
+        # Apply enhancements button
+        enhance_button = st.button("Apply Settings")
 
-    # Load the selected model
+    # Load the selected model - Fixed import approach
     try:
-        model = get_model(model_type=model_type_map[model_type])
+        # Import the model factory function directly
+        import sys
+        import os
 
-        # Update detection parameters if it's object detection model
-        if hasattr(model, "min_object_area"):
-            model.min_object_area = min_area
-            model.max_object_area = max_area
-            if model.object_detector:
-                model.object_detector.min_area = min_area
-                model.object_detector.max_area = max_area
+        sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+        # Use the model factory logic directly
+        model = _get_model_instance(model_type_map[model_type])
+
+        # Show model info
+        st.sidebar.success(f"✅ {model_type} loaded")
+        if hasattr(model, "model_path"):
+            st.sidebar.info(f"Path: {os.path.basename(model.model_path)}")
 
     except Exception as e:
-        st.error(f"❌ Error loading model: {str(e)}")
-        st.info("💡 Make sure you have trained the model using the training pipeline")
+        st.error(f"Error loading model: {str(e)}")
+        st.info("💡 Make sure you've trained a model using the Training Center first!")
         return
 
-    # Main content area
-    col1, col2 = st.columns([1, 1])
+    # Main content area with two columns
+    col1, col2 = st.columns(2)
 
-    # Input section
+    # Input handling
     with col1:
-        st.subheader("📤 Input")
-
-        # Input options
-        input_option = st.radio(
-            "Select Input Source",
-            ["Upload Image", "Camera Integration"],
-            help="Choose how to provide input images",
-        )
+        st.subheader("Input Image")
 
         if input_option == "Upload Image":
-            # Upload image
             uploaded_file = st.file_uploader(
-                "Choose an image...",
-                type=["jpg", "jpeg", "png", "bmp"],
-                help="Upload an image to detect objects and classify defects",
+                "Choose an image...", type=["jpg", "jpeg", "png", "bmp"]
             )
 
             if uploaded_file is not None:
@@ -129,48 +117,63 @@ def detection_page():
                 st.session_state.image = image
                 st.image(
                     cv2.cvtColor(image, cv2.COLOR_BGR2RGB),
-                    caption="📥 Uploaded Image",
+                    caption="Uploaded Image",
                     use_column_width=True,
                 )
 
-                # Process image when uploaded or settings changed
-                if apply_settings or st.session_state.detections is None:
-                    with st.spinner("🔄 Processing image..."):
-                        # Apply enhancements
-                        enhanced_image = apply_image_enhancement(
-                            image, brightness, contrast
-                        )
+                if enhance_button or st.session_state.detections is None:
+                    # Apply enhancements if requested
+                    enhanced_image = apply_image_enhancement(
+                        image, brightness, contrast
+                    )
 
-                        # Prepare for detection
-                        detection_image = prepare_for_detection(enhanced_image)
+                    # Prepare for detection
+                    detection_image = prepare_for_detection(enhanced_image)
 
-                        # Run detection
-                        detections = model.predict(detection_image)
-
-                        if detections is not None:
-                            st.session_state.detections = detections
-                            st.success(
-                                f"✅ Detected {detections['num_detections']} objects!"
+                    # Run detection with progress and YOLO-specific parameters
+                    with st.spinner("Running detection..."):
+                        if "YOLO" in model_type:
+                            # Pass YOLO-specific parameters
+                            detections = model.predict(
+                                detection_image,
+                                conf_threshold=confidence_threshold,
+                                iou_threshold=iou_threshold,
                             )
                         else:
-                            st.error("❌ Failed to perform detection")
+                            # Standard prediction for other models
+                            detections = model.predict(detection_image)
 
-        else:  # Camera Integration
-            st.info("📷 Camera integration available in Camera Integration page")
-            st.write("Use the Camera Integration page to:")
-            st.write("- Connect to Cognex, Basler, or Webcam")
-            st.write("- Capture images directly")
-            st.write("- Run real-time detection")
+                    if detections is not None:
+                        st.session_state.detections = detections
 
-    # Results section
+                        # Show detection count
+                        num_detections = detections.get("num_detections", 0)
+                        if num_detections > 0:
+                            st.success(f"✅ Found {num_detections} object(s)")
+                        else:
+                            st.info("ℹ️ No objects detected")
+                    else:
+                        st.error("❌ Failed to perform detection on the image.")
+
+        else:  # Camera option
+            _render_camera_interface(
+                model,
+                brightness,
+                contrast,
+                confidence_threshold,
+                iou_threshold if "YOLO" in model_type else None,
+                model_type,
+            )
+
+    # Results display
     with col2:
-        st.subheader("📊 Results")
+        st.subheader("Detection Results")
 
         if (
             st.session_state.image is not None
             and st.session_state.detections is not None
         ):
-            # Visualize detections
+            # Visualize detections on the image
             image_with_boxes = model.visualize_detections(
                 cv2.cvtColor(st.session_state.image, cv2.COLOR_BGR2RGB),
                 st.session_state.detections,
@@ -179,168 +182,339 @@ def detection_page():
 
             # Display image with detection boxes
             st.image(
-                image_with_boxes, caption="🎯 Detection Results", use_column_width=True
+                image_with_boxes, caption="Detection Results", use_column_width=True
             )
 
-            # Detection summary
-            st.subheader("📋 Detection Summary")
-            draw_detection_summary(
+            # Display detection summary
+            _render_detection_summary(
                 model, st.session_state.detections, confidence_threshold
             )
 
-    # Detailed analysis section (full width)
-    if (
-        st.session_state.image is not None
-        and st.session_state.detections is not None
-        and st.session_state.detections["num_detections"] > 0
-    ):
+            # Save results
+            if st.button("💾 Save Results"):
+                _save_detection_results(image_with_boxes, st.session_state.detections)
 
-        st.markdown("---")
-        st.subheader("🔍 Detailed Object Analysis")
 
-        # Create detailed object table
-        if "object_details" in st.session_state.detections:
-            object_data = []
-            for i, obj_detail in enumerate(
-                st.session_state.detections["object_details"]
-            ):
-                if st.session_state.detections["scores"][i] >= confidence_threshold:
-                    class_id = st.session_state.detections["classes"][i]
-                    class_name = model.categories.get(class_id, {}).get(
-                        "name", f"Class {class_id}"
+@st.cache_resource
+def _get_model_instance(model_type):
+    """Local model factory function to avoid circular imports"""
+    MODEL_BASE_PATH = "trained_models"
+
+    # Map of model types to their respective model paths and classes
+    model_configs = {
+        "taco": {
+            "path": "ssd_mobilenet_v2_taco_2018_03_29.pb",
+            "class": TACOModel,
+            "extra_args": {},
+        },
+        "defect_classification": {
+            "path": "resnet_defect_classifier.keras",
+            "class": DefectDetectionModel,
+            "extra_args": {
+                "class_mapping_path": os.path.join(
+                    MODEL_BASE_PATH, "class_mapping.json"
+                )
+            },
+        },
+        "defect_yolo": {
+            "path": "yolo_defect_detector/weights/best.pt",
+            "class": YOLODefectModel,
+            "extra_args": {},
+        },
+    }
+
+    # Check if model type is supported
+    if model_type not in model_configs:
+        raise ValueError(
+            f"Unknown model type: {model_type}. Available: {list(model_configs.keys())}"
+        )
+
+    config = model_configs[model_type]
+
+    # Construct full path with multiple fallback options
+    model_path = os.path.join(MODEL_BASE_PATH, config["path"])
+
+    # Check if model file exists with enhanced fallback logic
+    if not os.path.exists(model_path):
+        if model_type == "defect_yolo":
+            # Try multiple possible paths for YOLO model from training pipeline
+            alt_paths = [
+                # From training pipeline output
+                os.path.join(
+                    MODEL_BASE_PATH, "yolo_defect_detector", "weights", "best.pt"
+                ),
+                os.path.join(
+                    MODEL_BASE_PATH, "yolo_defect_detector", "weights", "last.pt"
+                ),
+                # Direct path
+                os.path.join(MODEL_BASE_PATH, "best.pt"),
+                os.path.join(MODEL_BASE_PATH, "yolo_best.pt"),
+                # Current directory fallbacks
+                "best.pt",
+                "yolo_defect_detector/weights/best.pt",
+                # Pretrained fallback
+                "yolov8n.pt",
+            ]
+
+            model_found = False
+            for alt_path in alt_paths:
+                if os.path.exists(alt_path):
+                    model_path = alt_path
+                    model_found = True
+                    st.sidebar.info(f"📍 Using model: {os.path.basename(alt_path)}")
+                    break
+
+            if not model_found:
+                # Try to download yolov8n.pt as ultimate fallback
+                try:
+                    from ultralytics import YOLO
+
+                    st.sidebar.warning(
+                        "⚠️ No trained model found, using YOLOv8n pretrained"
                     )
-
-                    object_data.append(
-                        {
-                            "Object ID": obj_detail["object_id"],
-                            "Classification": class_name,
-                            "Confidence": f"{st.session_state.detections['scores'][i]:.2%}",
-                            "Area (pixels)": obj_detail["area"],
-                            "Status": "✅ Normal" if class_id == 0 else "❌ Defect",
-                            "Bbox": f"({obj_detail['bbox_pixels'][0]}, {obj_detail['bbox_pixels'][1]}, "
-                            f"{obj_detail['bbox_pixels'][2]}, {obj_detail['bbox_pixels'][3]})",
-                        }
+                    model_path = "yolov8n.pt"
+                    # This will download yolov8n.pt if it doesn't exist
+                    YOLO(model_path)
+                except Exception as e:
+                    raise FileNotFoundError(
+                        f"YOLO model not found and cannot download fallback. Tried: {alt_paths}"
                     )
+        else:
+            raise FileNotFoundError(f"Model file not found: {model_path}")
 
-            if object_data:
-                df = pd.DataFrame(object_data)
-                st.dataframe(df, use_container_width=True)
+    # Initialize the appropriate model class
+    model_class = config["class"]
+    extra_args = config["extra_args"]
 
-                # Summary statistics
-                col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4)
+    model = model_class(model_path=model_path, **extra_args)
 
-                total_objects = len(object_data)
-                defective_objects = sum(
-                    1 for obj in object_data if "Defect" in obj["Status"]
+    # Load the model
+    if not model.load():
+        raise RuntimeError(f"Failed to load {model_type} model from {model_path}")
+
+    return model
+
+
+def _render_camera_interface(
+    model, brightness, contrast, confidence_threshold, iou_threshold=None, model_type=""
+):
+    """Render camera interface section with YOLO support"""
+    st.subheader("Camera Configuration")
+    camera_type = st.selectbox("Camera Type", ["Cognex", "Basler", "Webcam (Fallback)"])
+
+    if camera_type == "Cognex":
+        ip_address = st.text_input("Camera IP Address", "192.168.1.100")
+        port = st.text_input("Port", "80")
+        username = st.text_input("Username (if required)")
+        password = st.text_input("Password (if required)", type="password")
+
+        connect_button = st.button("Connect to Camera")
+        if connect_button:
+            st.session_state.camera = CognexCamera(
+                ip_address=ip_address,
+                port=port,
+                username=username if username else None,
+                password=password if password else None,
+            )
+
+            if st.session_state.camera.connect():
+                st.success("Camera connected successfully!")
+            else:
+                st.error("Failed to connect to camera. Check settings and try again.")
+
+    elif camera_type == "Basler":
+        basler_device_index = st.number_input(
+            "Basler Device Index",
+            min_value=0,
+            max_value=10,
+            value=0,
+            help="Index of the Basler camera to use (0 for first device)",
+        )
+
+        connect_button = st.button("Connect to Basler Camera")
+
+        if connect_button:
+            st.session_state.camera = BaslerCamera(
+                device_index=int(basler_device_index)
+            )
+
+            if st.session_state.camera.connect():
+                st.success("Basler camera connected successfully!")
+            else:
+                st.error(
+                    "Failed to connect to Basler camera. Check if the camera is properly connected and Pylon SDK is installed."
                 )
-                normal_objects = total_objects - defective_objects
-                pass_rate = (
-                    (normal_objects / total_objects * 100) if total_objects > 0 else 0
+
+    else:  # Webcam
+        webcam_id = st.number_input("Webcam ID", min_value=0, max_value=10, value=0)
+        connect_button = st.button("Connect to Webcam")
+
+        if connect_button:
+            st.session_state.camera = WebcamCamera(camera_id=int(webcam_id))
+            if st.session_state.camera.connect():
+                st.success("Webcam connected successfully!")
+            else:
+                st.error("Failed to connect to webcam.")
+
+    # Capture button
+    if st.session_state.camera and st.session_state.camera.connected:
+        if st.button("📸 Capture and Detect"):
+            image = st.session_state.camera.capture_image()
+
+            if image is not None:
+                # Store and display the captured image
+                st.session_state.image = image
+                st.image(
+                    cv2.cvtColor(image, cv2.COLOR_BGR2RGB),
+                    caption="Captured Image",
+                    use_column_width=True,
                 )
 
-                with col_stat1:
-                    st.metric("Total Objects", total_objects)
-                with col_stat2:
-                    st.metric("✅ Normal", normal_objects)
-                with col_stat3:
-                    st.metric("❌ Defective", defective_objects)
-                with col_stat4:
-                    st.metric("Pass Rate", f"{pass_rate:.1f}%")
+                # Apply enhancements
+                enhanced_image = apply_image_enhancement(image, brightness, contrast)
 
-        # Save results section
-        st.markdown("---")
-        col_save1, col_save2, col_save3 = st.columns([1, 1, 1])
+                # Prepare for detection
+                detection_image = prepare_for_detection(enhanced_image)
 
-        with col_save1:
-            if st.button("💾 Save Results", use_container_width=True):
-                _save_detection_results(
-                    image_with_boxes, st.session_state.detections, confidence_threshold
+                # Run detection with YOLO-specific parameters
+                with st.spinner("Running detection..."):
+                    if "YOLO" in model_type:
+                        detections = model.predict(
+                            detection_image,
+                            conf_threshold=confidence_threshold,
+                            iou_threshold=iou_threshold,
+                        )
+                    else:
+                        detections = model.predict(detection_image)
+
+                if detections is not None:
+                    st.session_state.detections = detections
+
+                    # Show detection count
+                    num_detections = detections.get("num_detections", 0)
+                    if num_detections > 0:
+                        st.success(f"✅ Found {num_detections} object(s)")
+                    else:
+                        st.info("ℹ️ No objects detected")
+                else:
+                    st.error("❌ Failed to perform detection on the image.")
+            else:
+                st.error("Failed to capture image from camera.")
+
+
+def _render_detection_summary(model, detections, confidence_threshold):
+    """Render detection summary with multi-object support"""
+    st.subheader("📊 Detection Summary")
+
+    num_detections = detections.get("num_detections", 0)
+
+    if num_detections == 0:
+        st.info("No objects detected above confidence threshold")
+        return
+
+    # Filter detections by confidence
+    valid_detections = []
+    for i in range(num_detections):
+        if detections["scores"][i] >= confidence_threshold:
+            class_id = detections["classes"][i]
+            score = detections["scores"][i]
+
+            # Get class name - Updated for better compatibility
+            if hasattr(model, "categories"):
+                class_name = model.categories.get(class_id, {}).get(
+                    "name", f"Class {class_id}"
                 )
+            elif "labels" in detections and len(detections["labels"]) > i:
+                class_name = detections["labels"][i]
+            else:
+                class_name = f"Class {class_id}"
 
-        with col_save2:
-            if st.button("📊 Export Data", use_container_width=True):
-                _export_detection_data(
-                    st.session_state.detections, confidence_threshold
-                )
+            valid_detections.append(
+                {
+                    "class_id": class_id,
+                    "class_name": class_name,
+                    "confidence": score,
+                    "box": detections["boxes"][i] if "boxes" in detections else None,
+                }
+            )
 
-        with col_save3:
-            if st.button("🔄 Clear Results", use_container_width=True):
-                st.session_state.detections = None
-                st.rerun()
+    if not valid_detections:
+        st.info("No objects detected above confidence threshold")
+        return
+
+    # Summary statistics
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.metric("Total Objects", len(valid_detections))
+
+    with col2:
+        defect_count = sum(
+            1 for d in valid_detections if d["class_name"].lower() == "defect"
+        )
+        st.metric("Defects Found", defect_count)
+
+    with col3:
+        normal_count = len(valid_detections) - defect_count
+        st.metric("Normal Objects", normal_count)
+
+    # Detailed results table
+    st.subheader("🔍 Detailed Results")
+
+    results_data = []
+    for i, detection in enumerate(valid_detections):
+        results_data.append(
+            {
+                "Object #": i + 1,
+                "Class": detection["class_name"],
+                "Confidence": f"{detection['confidence']:.3f}",
+                "Status": (
+                    "⚠️ DEFECT"
+                    if detection["class_name"].lower() == "defect"
+                    else "✅ NORMAL"
+                ),
+            }
+        )
+
+    st.dataframe(results_data, use_container_width=True)
+
+    # Alert for defects
+    if defect_count > 0:
+        st.error(f"🚨 {defect_count} defective object(s) detected!")
+    else:
+        st.success("✅ All objects appear normal")
 
 
-def _save_detection_results(image_with_boxes, detections, confidence_threshold):
-    """Save detection results to file."""
+def _save_detection_results(image_with_boxes, detections):
+    """Save detection results to file"""
     try:
+        # Create results directory if it doesn't exist
         os.makedirs("results", exist_ok=True)
 
         # Save image with bounding boxes
-        result_path = os.path.join("results", f"detection_{int(time.time())}.jpg")
+        timestamp = int(time.time())
+        result_path = os.path.join("results", f"detection_{timestamp}.jpg")
+
         cv2.imwrite(result_path, cv2.cvtColor(image_with_boxes, cv2.COLOR_RGB2BGR))
 
-        # Save detection data
-        result_data = {
-            "timestamp": time.time(),
-            "confidence_threshold": confidence_threshold,
-            "num_detections": int(detections["num_detections"]),
-            "objects": [],
-        }
+        # Save detection data as JSON
+        import json
 
-        if "object_details" in detections:
-            for i, obj_detail in enumerate(detections["object_details"]):
-                if detections["scores"][i] >= confidence_threshold:
-                    result_data["objects"].append(
-                        {
-                            "object_id": obj_detail["object_id"],
-                            "class_id": int(detections["classes"][i]),
-                            "confidence": float(detections["scores"][i]),
-                            "bbox_pixels": obj_detail["bbox_pixels"],
-                            "area": obj_detail["area"],
-                        }
-                    )
+        # Convert numpy arrays to lists for JSON serialization
+        detection_data = {}
+        for key, value in detections.items():
+            if isinstance(value, np.ndarray):
+                detection_data[key] = value.tolist()
+            else:
+                detection_data[key] = value
 
-        json_path = result_path.replace(".jpg", "_data.json")
+        json_path = os.path.join("results", f"detection_{timestamp}.json")
         with open(json_path, "w") as f:
-            json.dump(result_data, f, indent=2)
+            json.dump(detection_data, f, indent=2)
 
-        st.success(f"✅ Results saved to {result_path}")
+        st.success(f"✅ Results saved!")
+        st.info(f"📁 Image: {result_path}")
+        st.info(f"📄 Data: {json_path}")
 
     except Exception as e:
         st.error(f"❌ Failed to save results: {str(e)}")
-
-
-def _export_detection_data(detections, confidence_threshold):
-    """Export detection data as downloadable file."""
-    try:
-        if "object_details" in detections:
-            export_data = []
-            for i, obj_detail in enumerate(detections["object_details"]):
-                if detections["scores"][i] >= confidence_threshold:
-                    export_data.append(
-                        {
-                            "object_id": obj_detail["object_id"],
-                            "class_id": int(detections["classes"][i]),
-                            "confidence": float(detections["scores"][i]),
-                            "area": obj_detail["area"],
-                            "bbox_x": obj_detail["bbox_pixels"][0],
-                            "bbox_y": obj_detail["bbox_pixels"][1],
-                            "bbox_width": obj_detail["bbox_pixels"][2],
-                            "bbox_height": obj_detail["bbox_pixels"][3],
-                        }
-                    )
-
-            if export_data:
-                df = pd.DataFrame(export_data)
-                csv_data = df.to_csv(index=False)
-
-                st.download_button(
-                    label="📥 Download CSV",
-                    data=csv_data,
-                    file_name=f"detection_results_{int(time.time())}.csv",
-                    mime="text/csv",
-                )
-            else:
-                st.warning("⚠️ No data to export")
-
-    except Exception as e:
-        st.error(f"❌ Failed to export data: {str(e)}")
