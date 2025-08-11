@@ -6,3 +6,5 @@ trained_models/
 __pycache__/
 anomalib_data/
 yolo_data/
+defect_detection_dataset/
+defect_detection_dataset_objects/

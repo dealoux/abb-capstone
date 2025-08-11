@@ -12,7 +12,10 @@ from abbvisionsystem.preprocessing.preprocessing import (
     apply_image_enhancement,
 )
 from abbvisionsystem.models.taco_model import TACOModel
-from abbvisionsystem.models.defect_detection_model import DefectDetectionModel
+from abbvisionsystem.models.defect_detection_model import (
+    DefectClassificationModel,
+    ObjectDefectDetectionModel,
+)
 from abbvisionsystem.utils.visualization import draw_detection_summary
 from abbvisionsystem.vision_tools.vision_interface import vision_interface
 from abbvisionsystem.camera.camera_interface import camera_calibration_interface
@@ -56,14 +59,14 @@ MODEL_BASE_PATH = "trained_models"
 
 
 # Cache the model loading
-# Update the get_model function to include the new defect detection model
 @st.cache_resource
-def get_model(model_type="taco"):
+def get_model(model_type="taco", detection_mode="whole_image"):
     """Factory function to get appropriate model"""
     # Map of model types to their respective filenames
     model_files = {
         "taco": "ssd_mobilenet_v2_taco_2018_03_29.pb",
-        "defect": "final_defect_model.h5",
+        "defect": "defect_classifier.h5",
+        "object_defect": "object_defect_classifier.h5",  # For object-level detection
     }
 
     # Check if model type is supported
@@ -81,8 +84,20 @@ def get_model(model_type="taco"):
         model = TACOModel(model_path=model_path)
     elif model_type == "defect":
         class_mapping_path = os.path.join(MODEL_BASE_PATH, "class_mapping.json")
-        model = DefectDetectionModel(
-            model_path=model_path, class_mapping_path=class_mapping_path
+        if detection_mode == "object_level":
+            # Use object detection model for individual objects
+            model = ObjectDefectDetectionModel(
+                classifier_path=model_path, class_mapping_path=class_mapping_path
+            )
+        else:
+            # Use whole image classification
+            model = DefectClassificationModel(
+                model_path=model_path, class_mapping_path=class_mapping_path
+            )
+    elif model_type == "object_defect":
+        class_mapping_path = os.path.join(MODEL_BASE_PATH, "class_mapping.json")
+        model = ObjectDefectDetectionModel(
+            classifier_path=model_path, class_mapping_path=class_mapping_path
         )
 
     # Load the model
@@ -105,9 +120,7 @@ def detection_system_page():
         else:
             st.warning("⚠️ Camera not calibrated. Go to Camera Calibration page.")
 
-    # ... (rest of your existing detection system code)
-    # Keep all the existing functionality from your current app.py
-    # create sidebar
+    # Create sidebar
     with st.sidebar:
         st.header("Configuration")
 
@@ -119,6 +132,20 @@ def detection_system_page():
             "Defect Detection": "defect",
             "TACO Waste Sorting": "taco",
         }
+
+        # Detection mode selection (only for defect detection)
+        detection_mode = "whole_image"
+        if model_type == "Defect Detection":
+            detection_mode = st.radio(
+                "Detection Mode",
+                ["Whole Image", "Individual Objects"],
+                help="Choose whether to classify the entire image or detect and classify individual objects",
+            )
+            detection_mode = (
+                "object_level"
+                if detection_mode == "Individual Objects"
+                else "whole_image"
+            )
 
         # Input selection
         input_option = st.radio(
@@ -134,21 +161,46 @@ def detection_system_page():
         st.subheader("Detection Settings")
         confidence_threshold = st.slider("Confidence Threshold", 0.1, 1.0, 0.5, 0.05)
 
+        # Object detection parameters (only for object-level detection)
+        if detection_mode == "object_level":
+            st.subheader("Object Detection Parameters")
+            min_area = st.slider("Min Object Area", 500, 5000, 1000)
+            max_area = st.slider("Max Object Area", 10000, 100000, 50000)
+
         # Apply enhancements button
         enhance_button = st.button("Apply Settings")
 
     # Load the selected model
     try:
-        model = get_model(model_type=model_type_map[model_type])
-    except Exception as e:
-        if "Custom Model" in model_type:
-            st.error(
-                "Custom model not available yet. Please use the TACO pre-trained model."
+        if model_type == "Defect Detection" and detection_mode == "object_level":
+            # Check if object detection model exists
+            object_model_path = os.path.join(
+                MODEL_BASE_PATH, "object_defect_classifier.h5"
             )
-            model = get_model(model_type="taco")
+            if os.path.exists(object_model_path):
+                model = get_model(model_type="object_defect")
+                # Update detection parameters if specified
+                if hasattr(model, "min_object_area"):
+                    model.min_object_area = min_area
+                    model.max_object_area = max_area
+                    if model.object_detector:
+                        model.object_detector.min_area = min_area
+                        model.object_detector.max_area = max_area
+            else:
+                st.warning(
+                    "⚠️ Object detection model not found. Please train the object detection model first."
+                )
+                st.info("Using whole image classification instead.")
+                model = get_model(
+                    model_type=model_type_map[model_type], detection_mode="whole_image"
+                )
         else:
-            st.error(f"Error loading model: {str(e)}")
-            return
+            model = get_model(
+                model_type=model_type_map[model_type], detection_mode=detection_mode
+            )
+    except Exception as e:
+        st.error(f"Error loading model: {str(e)}")
+        return
 
     # Main content area with two columns
     col1, col2 = st.columns(2)
@@ -188,6 +240,14 @@ def detection_system_page():
                     if detections is not None:
                         st.session_state.detections = detections
                         st.success("Detection completed successfully!")
+
+                        # Show detection info
+                        if detection_mode == "object_level":
+                            st.info(
+                                f"🎯 Detected {detections['num_detections']} objects"
+                            )
+                        else:
+                            st.info("🖼️ Whole image classification completed")
                     else:
                         st.error("Failed to perform detection on the image.")
 
@@ -281,6 +341,14 @@ def detection_system_page():
                         if detections is not None:
                             st.session_state.detections = detections
                             st.success("Detection completed successfully!")
+
+                            # Show detection info
+                            if detection_mode == "object_level":
+                                st.info(
+                                    f"🎯 Detected {detections['num_detections']} objects"
+                                )
+                            else:
+                                st.info("🖼️ Whole image classification completed")
                         else:
                             st.error("Failed to perform detection on the image.")
                     else:
@@ -309,6 +377,63 @@ def detection_system_page():
                 model, st.session_state.detections, confidence_threshold
             )
 
+            # Enhanced summary for object detection
+            if (
+                detection_mode == "object_level"
+                and st.session_state.detections["num_detections"] > 0
+            ):
+                st.subheader("🔍 Object Analysis")
+
+                # Create detailed object table
+                if "object_details" in st.session_state.detections:
+                    import pandas as pd
+
+                    object_data = []
+                    for i, obj_detail in enumerate(
+                        st.session_state.detections["object_details"]
+                    ):
+                        if (
+                            st.session_state.detections["scores"][i]
+                            >= confidence_threshold
+                        ):
+                            class_id = st.session_state.detections["classes"][i]
+                            class_name = model.categories.get(class_id, {}).get(
+                                "name", f"Class {class_id}"
+                            )
+
+                            object_data.append(
+                                {
+                                    "Object ID": obj_detail["object_id"],
+                                    "Classification": class_name,
+                                    "Confidence": f"{st.session_state.detections['scores'][i]:.2%}",
+                                    "Area (pixels)": obj_detail["area"],
+                                    "Status": (
+                                        "✅ Normal" if class_id == 0 else "❌ Defect"
+                                    ),
+                                }
+                            )
+
+                    if object_data:
+                        df = pd.DataFrame(object_data)
+                        st.dataframe(df, use_container_width=True)
+
+                        # Summary statistics
+                        total_objects = len(object_data)
+                        defective_objects = sum(
+                            1 for obj in object_data if "Defect" in obj["Status"]
+                        )
+
+                        col_stats1, col_stats2, col_stats3 = st.columns(3)
+                        with col_stats1:
+                            st.metric("Total Objects", total_objects)
+                        with col_stats2:
+                            st.metric("Defective", defective_objects)
+                        with col_stats3:
+                            st.metric(
+                                "Pass Rate",
+                                f"{((total_objects-defective_objects)/total_objects*100):.1f}%",
+                            )
+
             # Option to save result
             if st.button("Save Results"):
                 # Create results directory if it doesn't exist
@@ -322,9 +447,51 @@ def detection_system_page():
                     result_path, cv2.cvtColor(image_with_boxes, cv2.COLOR_RGB2BGR)
                 )
 
-                st.success(f"Results saved to {result_path}")
+                # Save detection data
+                if detection_mode == "object_level":
+                    import json
+
+                    result_data = {
+                        "detection_mode": detection_mode,
+                        "num_detections": int(
+                            st.session_state.detections["num_detections"]
+                        ),
+                        "confidence_threshold": confidence_threshold,
+                        "objects": [],
+                    }
+
+                    if "object_details" in st.session_state.detections:
+                        for i, obj_detail in enumerate(
+                            st.session_state.detections["object_details"]
+                        ):
+                            if (
+                                st.session_state.detections["scores"][i]
+                                >= confidence_threshold
+                            ):
+                                result_data["objects"].append(
+                                    {
+                                        "object_id": obj_detail["object_id"],
+                                        "class_id": int(
+                                            st.session_state.detections["classes"][i]
+                                        ),
+                                        "confidence": float(
+                                            st.session_state.detections["scores"][i]
+                                        ),
+                                        "bbox_pixels": obj_detail["bbox_pixels"],
+                                        "area": obj_detail["area"],
+                                    }
+                                )
+
+                    json_path = result_path.replace(".jpg", "_data.json")
+                    with open(json_path, "w") as f:
+                        json.dump(result_data, f, indent=2)
+
+                    st.success(f"Results saved to {result_path} and {json_path}")
+                else:
+                    st.success(f"Results saved to {result_path}")
 
 
+# Keep all your existing training functions unchanged...
 def training_center_page():
     """Training center for creating and managing vision models."""
     st.title("📊 Vision Training Center")
@@ -335,6 +502,7 @@ def training_center_page():
         [
             "Pattern Templates",
             "Defect Classification",
+            "Object Detection Training",  # Add this option
             "Blob Detection",
             "Custom Models",
         ],
@@ -344,10 +512,33 @@ def training_center_page():
         pattern_training_interface()
     elif training_type == "Defect Classification":
         defect_training_interface()
+    elif training_type == "Object Detection Training":
+        object_detection_training_interface()  # Add this function
     elif training_type == "Blob Detection":
         blob_training_interface()
     elif training_type == "Custom Models":
         custom_model_interface()
+
+
+def object_detection_training_interface():
+    """Interface for training object-level defect detection."""
+    st.header("🎯 Object Detection Training")
+
+    st.info("This interface integrates with your training pipeline to:")
+    st.write("- Organize data for object-level detection")
+    st.write("- Train models to detect and classify individual objects")
+    st.write("- Validate object detection performance")
+    st.write("- Export models for use in the detection system")
+
+    # Quick training button
+    if st.button("Launch Training Pipeline"):
+        st.info("💡 To train object detection models:")
+        st.code("jupyter notebook pipelinev2.ipynb")
+        st.write("This will:")
+        st.write("1. Organize your data for object detection")
+        st.write("2. Train the object-level classifier")
+        st.write("3. Save the model as 'object_defect_classifier.h5'")
+        st.write("4. Enable 'Individual Objects' mode in the Detection System")
 
 
 def pattern_training_interface():
@@ -413,12 +604,17 @@ def defect_training_interface():
     """Interface for training defect detection models."""
     st.header("🔍 Defect Detection Training")
 
-    st.info("This interface would provide:")
+    st.info("This interface integrates with your training pipeline:")
     st.write("- Upload normal and defective samples")
     st.write("- Configure training parameters")
     st.write("- Monitor training progress")
     st.write("- Validate model performance")
     st.write("- Export trained models")
+
+    # Quick training button
+    if st.button("Launch Training Pipeline"):
+        st.info("💡 To train defect detection models:")
+        st.code("jupyter notebook pipelinev2.ipynb")
 
 
 def blob_training_interface():
