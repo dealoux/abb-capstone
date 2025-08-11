@@ -1,4 +1,4 @@
-"""Enhanced defect detection model classes with object detection."""
+"""Object-based defect detection model - simplified version."""
 
 import os
 import json
@@ -6,143 +6,11 @@ import logging
 import numpy as np
 import tensorflow as tf
 import cv2
-from abc import ABC, abstractmethod
 
 logger = logging.getLogger(__name__)
 
 
-class BaseDefectModel(ABC):
-    """Base class for defect detection models."""
-
-    def __init__(self, model_path):
-        self.model_path = model_path
-        self.loaded = False
-        self.categories = {}
-
-    @abstractmethod
-    def load(self):
-        """Load the model."""
-        pass
-
-    @abstractmethod
-    def predict(self, image):
-        """Run prediction on image."""
-        pass
-
-    @abstractmethod
-    def visualize_detections(self, image, detections, threshold=0.5):
-        """Visualize detection results."""
-        pass
-
-
-class DefectClassificationModel(BaseDefectModel):
-    """Image-level defect classification model."""
-
-    def __init__(
-        self,
-        model_path="trained_models/defect_classifier.h5",
-        class_mapping_path="trained_models/class_mapping.json",
-    ):
-        super().__init__(model_path)
-        self.class_mapping_path = class_mapping_path
-        self.model = None
-        self.class_mapping = {}
-
-        # Default categories
-        self.categories = {
-            0: {"name": "Normal", "id": 0},
-            1: {"name": "Defect", "id": 1},
-        }
-
-    def load(self):
-        """Load the classification model."""
-        try:
-            # Try loading keras format first, then h5
-            keras_path = self.model_path.replace(".h5", ".keras")
-            if os.path.exists(keras_path):
-                self.model = tf.keras.models.load_model(keras_path)
-                logger.info(f"Loaded model from: {keras_path}")
-            else:
-                self.model = tf.keras.models.load_model(self.model_path)
-                logger.info(f"Loaded model from: {self.model_path}")
-
-            # Load class mapping
-            if os.path.exists(self.class_mapping_path):
-                with open(self.class_mapping_path, "r") as f:
-                    self.class_mapping = json.load(f)
-
-                for class_id, class_name in self.class_mapping.items():
-                    self.categories[int(class_id)] = {
-                        "name": class_name,
-                        "id": int(class_id),
-                    }
-
-            self.loaded = True
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to load model: {str(e)}")
-            return False
-
-    def predict(self, image):
-        """Run prediction on image."""
-        if not self.loaded:
-            logger.warning("Model not loaded. Call load() first.")
-            return None
-
-        try:
-            # Preprocess image
-            img = cv2.resize(image, (224, 224))
-            img = img.astype("float32") / 255.0
-            img = np.expand_dims(img, axis=0)
-
-            # Predict
-            predictions = self.model.predict(img, verbose=0)
-            score = float(predictions[0][0])
-            class_id = 1 if score > 0.5 else 0
-
-            # Return in detection format for compatibility
-            return {
-                "boxes": np.array([[0.1, 0.1, 0.9, 0.9]]),
-                "scores": np.array([score if class_id == 1 else 1.0 - score]),
-                "classes": np.array([class_id]),
-                "num_detections": 1,
-            }
-
-        except Exception as e:
-            logger.error(f"Prediction error: {str(e)}")
-            return None
-
-    def visualize_detections(self, image, detections, threshold=0.5):
-        """Draw classification results on image."""
-        result = image.copy()
-        height, width, _ = image.shape
-
-        if detections["num_detections"] > 0:
-            class_id = detections["classes"][0]
-            score = detections["scores"][0]
-
-            if score > threshold:
-                # Color based on classification
-                color = (0, 0, 255) if class_id == 1 else (0, 255, 0)
-
-                # Draw border
-                cv2.rectangle(result, (10, 10), (width - 10, height - 10), color, 10)
-
-                # Add label
-                class_name = self.categories.get(class_id, {}).get(
-                    "name", f"Class {class_id}"
-                )
-                label = f"{class_name}: {score:.2f}"
-
-                cv2.putText(
-                    result, label, (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.5, color, 2
-                )
-
-        return result
-
-
-class ObjectDefectDetectionModel(BaseDefectModel):
+class ObjectDefectDetectionModel:
     """Object detection + defect classification model."""
 
     def __init__(
@@ -152,14 +20,15 @@ class ObjectDefectDetectionModel(BaseDefectModel):
         min_object_area=1000,
         max_object_area=50000,
     ):
-        super().__init__(classifier_path)
+        self.model_path = classifier_path
         self.class_mapping_path = class_mapping_path
         self.classifier = None
         self.class_mapping = {}
         self.min_object_area = min_object_area
         self.max_object_area = max_object_area
+        self.loaded = False
 
-        # Import object detector - use relative import or lazy import
+        # Import object detector - use lazy import to avoid circular imports
         self.object_detector = None
 
         # Default categories
@@ -187,8 +56,10 @@ class ObjectDefectDetectionModel(BaseDefectModel):
             keras_path = self.model_path.replace(".h5", ".keras")
             if os.path.exists(keras_path):
                 self.classifier = tf.keras.models.load_model(keras_path)
+                logger.info(f"Loaded model from: {keras_path}")
             else:
                 self.classifier = tf.keras.models.load_model(self.model_path)
+                logger.info(f"Loaded model from: {self.model_path}")
 
             # Load class mapping
             if os.path.exists(self.class_mapping_path):
