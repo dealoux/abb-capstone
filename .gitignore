@@ -2,9 +2,11 @@
 *.pkl
 .DS_Store
 .env
-trained_models/
 __pycache__/
 anomalib_data/
 yolo_data/
 defect_detection_dataset/
 object_detection_dataset_objects/
+multi_object_test/
+yolo_dataset
+trained_models/
