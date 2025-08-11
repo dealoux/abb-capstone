@@ -118,7 +118,7 @@ def detection_system_page():
                 st.image(
                     cv2.cvtColor(image, cv2.COLOR_BGR2RGB),
                     caption="Uploaded Image",
-                    use_column_width=True,
+                    use_container_width=True,
                 )
 
                 if enhance_button or st.session_state.detections is None:
@@ -182,7 +182,7 @@ def detection_system_page():
 
             # Display image with detection boxes
             st.image(
-                image_with_boxes, caption="Detection Results", use_column_width=True
+                image_with_boxes, caption="Detection Results", use_container_width=True
             )
 
             # Display detection summary
@@ -367,7 +367,7 @@ def _render_camera_interface(
                 st.image(
                     cv2.cvtColor(image, cv2.COLOR_BGR2RGB),
                     caption="Captured Image",
-                    use_column_width=True,
+                    use_container_width=True,
                 )
 
                 # Apply enhancements

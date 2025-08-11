@@ -8,5 +8,5 @@ yolo_data/
 defect_detection_dataset/
 object_detection_dataset_objects/
 multi_object_test/
-yolo_dataset
+yolo_dataset/
 trained_models/
