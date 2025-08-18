@@ -16,10 +16,12 @@ from abbvisionsystem.utils.visualization import draw_detection_summary
 # Import UI pages
 from abbvisionsystem.ui.detection_page import detection_system_page
 from abbvisionsystem.ui.training_page import training_center_page
+from abbvisionsystem.ui.video_detection_page import (
+    video_detection_page,
+)  # Added video page import
 from abbvisionsystem.camera.camera_interface import camera_calibration_interface
 from abbvisionsystem.vision_tools.vision_interface import vision_interface
 
-# Initialize session state
 if "image" not in st.session_state:
     st.session_state.image = None
 if "detections" not in st.session_state:
@@ -27,14 +29,12 @@ if "detections" not in st.session_state:
 if "camera" not in st.session_state:
     st.session_state.camera = None
 
-# Base path for all models
 MODEL_BASE_PATH = "trained_models"
 
 
 @st.cache_resource
 def get_model(model_type="taco"):
     """Factory function to get appropriate model - Updated for pipeline compatibility"""
-    # Map of model types to their respective model paths and classes
     model_configs = {
         "taco": {
             "path": "ssd_mobilenet_v2_taco_2018_03_29.pb",
@@ -57,7 +57,6 @@ def get_model(model_type="taco"):
         },
     }
 
-    # Check if model type is supported
     if model_type not in model_configs:
         raise ValueError(
             f"Unknown model type: {model_type}. Available: {list(model_configs.keys())}"
@@ -65,15 +64,11 @@ def get_model(model_type="taco"):
 
     config = model_configs[model_type]
 
-    # Construct full path with multiple fallback options
     model_path = os.path.join(MODEL_BASE_PATH, config["path"])
 
-    # Check if model file exists with enhanced fallback logic
     if not os.path.exists(model_path):
         if model_type == "defect_yolo":
-            # Try multiple possible paths for YOLO model from training pipeline
             alt_paths = [
-                # From training pipeline output
                 os.path.join(
                     MODEL_BASE_PATH, "yolo_defect_detector", "weights", "best.pt"
                 ),
@@ -86,7 +81,6 @@ def get_model(model_type="taco"):
                 # Current directory fallbacks
                 "best.pt",
                 "yolo_defect_detector/weights/best.pt",
-                # Pretrained fallback
                 "yolov8n.pt",
             ]
 
@@ -116,13 +110,11 @@ def get_model(model_type="taco"):
         else:
             raise FileNotFoundError(f"Model file not found: {model_path}")
 
-    # Initialize the appropriate model class
     model_class = config["class"]
     extra_args = config["extra_args"]
 
     model = model_class(model_path=model_path, **extra_args)
 
-    # Load the model
     if not model.load():
         raise RuntimeError(f"Failed to load {model_type} model from {model_path}")
 
@@ -131,24 +123,25 @@ def get_model(model_type="taco"):
 
 def main():
     """Main application entry point"""
-    # Set page configuration - MOVED HERE
     st.set_page_config(page_title="ABB Vision System", page_icon="♻️", layout="wide")
 
     st.sidebar.title("🤖 ABB Vision System")
 
-    # Navigation
     page = st.sidebar.selectbox(
         "Choose Application",
         [
-            "🏠 Detection System",
+            "🏠 Image Detection",
+            "🎥 Video Detection",
             "🔍 Vision Tools",
             "📷 Camera Calibration",
             "📊 Training Center",
         ],
     )
 
-    if page == "🏠 Detection System":
+    if page == "🏠 Image Detection":
         detection_system_page()
+    elif page == "🎥 Video Detection":
+        video_detection_page()
     elif page == "🔍 Vision Tools":
         vision_interface()
     elif page == "📷 Camera Calibration":

@@ -10,3 +10,5 @@ object_detection_dataset_objects/
 multi_object_test/
 yolo_dataset/
 trained_models/
+realistic_training_data/
+yolo_dataset_realistic/
