@@ -305,7 +305,7 @@ def _test_training_setup():
             test_results.append(("❌", f"data_manager import: {e}"))
 
         try:
-            from abbvisionsystem.training_pipeline.yolo_trainer import (
+            from abbvisionsystem.training_pipeline.yolov8_trainer import (
                 YOLODefectDetector,
             )
 
