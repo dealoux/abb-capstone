@@ -134,6 +134,8 @@ class YOLO11DefectDetector:
                 f"trained_models/{self.model_variant}_defect_detector/weights/best.pt",
                 f"trained_models/yolo_defect_detector/weights/best.pt",
                 f"trained_models/{self.model_variant}/weights/best.pt",
+                f"yolo11_trained_models/{self.model_variant}_defect_detector/weights/best.pt",
+                f"cpu_trained_models/{self.model_variant}_cpu_defect_detector/weights/best.pt",
                 "best.pt",
             ]
 
@@ -177,7 +179,7 @@ class YOLO11DefectDetector:
         **kwargs,
     ) -> str:
         """
-        Train YOLO11 model with dynamic variant support.
+        Train YOLO11 model with dynamic variant support and CPU optimization.
 
         Args:
             dataset_yaml: Path to dataset YAML file
@@ -212,6 +214,22 @@ class YOLO11DefectDetector:
         print(f"   Project: {project}")
         print(f"   Name: {name}")
 
+        # Detect available device (CUDA vs CPU)
+        import torch
+
+        if torch.cuda.is_available():
+            device = "auto"  # Let YOLO decide
+            print(f"   Device: CUDA (GPU available)")
+            cpu_mode = False
+        else:
+            device = "cpu"
+            print(f"   Device: CPU (No CUDA available)")
+            cpu_mode = True
+            # Reduce batch size for CPU training
+            if batch > 8:
+                batch = 8
+                print(f"   Adjusted batch size to {batch} for CPU training")
+
         # Set default training parameters optimized for defect detection
         training_params = {
             "data": dataset_yaml,
@@ -220,16 +238,17 @@ class YOLO11DefectDetector:
             "imgsz": imgsz,
             "project": project,
             "name": name,
+            "device": device,  # Use detected device instead of 'auto'
             "save_period": 10,  # Save every 10 epochs
             "plots": True,  # Generate training plots
-            "device": "auto",  # Auto-detect GPU/CPU
-            "workers": 8,  # Data loading workers
-            "patience": 20,  # Early stopping patience
+            "workers": 4 if cpu_mode else 8,  # Fewer workers for CPU
+            "patience": 15 if cpu_mode else 20,  # Shorter patience for CPU
             "save": True,  # Save checkpoints
             "verbose": True,  # Verbose output
             "seed": 42,  # Reproducible results
-            "amp": True,  # Automatic Mixed Precision
+            "amp": not cpu_mode,  # Disable AMP for CPU training
             "fraction": 1.0,  # Use full dataset
+            "cache": not cpu_mode,  # Disable caching for CPU to save memory
             # Data augmentation optimized for industrial defect detection
             "hsv_h": 0.015,  # Hue augmentation (minimal for industrial)
             "hsv_s": 0.7,  # Saturation augmentation
@@ -288,7 +307,7 @@ class YOLO11DefectDetector:
         max_det: int = 100,
     ) -> Dict:
         """
-        Run prediction with dynamic model support.
+        Run prediction with dynamic model support and CPU optimization.
 
         Args:
             image_path: Path to image or numpy array
@@ -305,6 +324,11 @@ class YOLO11DefectDetector:
                     f"Failed to load {self.model_variant} model for prediction"
                 )
 
+        # Detect device for prediction
+        import torch
+
+        device = "cpu" if not torch.cuda.is_available() else "auto"
+
         try:
             # Run inference
             results = self.model(
@@ -313,7 +337,7 @@ class YOLO11DefectDetector:
                 iou=float(iou_threshold),
                 max_det=max_det,
                 verbose=False,
-                device="auto",
+                device=device,  # Use detected device
             )
 
             if not results or len(results) == 0:
@@ -495,7 +519,7 @@ class YOLO11DefectDetector:
 
         Args:
             use_case: One of 'real_time', 'production', 'quality_control',
-                     'research', 'edge', 'segmentation', 'oriented'
+                     'research', 'edge', 'segmentation', 'oriented', 'cpu'
 
         Returns:
             List of recommended model variants
@@ -510,9 +534,42 @@ class YOLO11DefectDetector:
             "segmentation": ["yolo11s-seg", "yolo11m-seg"],
             "oriented": ["yolo11s-obb", "yolo11m-obb"],
             "classification": ["yolo11s-cls", "yolo11m-cls"],
+            "cpu": ["yolo11n", "yolo11s"],  # CPU-friendly models
+            "cpu_fast": ["yolo11n"],
+            "cpu_balanced": ["yolo11s"],
         }
 
         return recommendations.get(use_case.lower(), ["yolo11s"])
+
+    @staticmethod
+    def check_system_capabilities() -> Dict:
+        """Check system capabilities for training optimization."""
+        import torch
+        import os
+
+        capabilities = {
+            "cuda_available": torch.cuda.is_available(),
+            "cuda_device_count": (
+                torch.cuda.device_count() if torch.cuda.is_available() else 0
+            ),
+            "cpu_cores": os.cpu_count(),
+            "torch_version": torch.__version__,
+            "recommended_device": "cuda" if torch.cuda.is_available() else "cpu",
+            "recommended_batch_size": 16 if torch.cuda.is_available() else 4,
+            "recommended_workers": 8 if torch.cuda.is_available() else 2,
+        }
+
+        if torch.cuda.is_available():
+            try:
+                capabilities["cuda_device_name"] = torch.cuda.get_device_name(0)
+                capabilities["cuda_memory_gb"] = (
+                    torch.cuda.get_device_properties(0).total_memory / 1024**3
+                )
+            except:
+                capabilities["cuda_device_name"] = "Unknown"
+                capabilities["cuda_memory_gb"] = 0
+
+        return capabilities
 
 
 def create_multi_object_test_images(
@@ -521,9 +578,85 @@ def create_multi_object_test_images(
     images_per_composition: int = 50,
     objects_per_image: Tuple[int, int] = (2, 6),
 ) -> None:
-    """Create multi-object test images (unchanged from original)."""
-    # Keep original implementation
-    pass
+    """Create multi-object test images for evaluation."""
+    import os
+    import random
+    import glob
+    from PIL import Image, ImageEnhance
+    import numpy as np
+
+    print(f"🎨 Creating multi-object test images...")
+    print(f"   Source: {single_object_dir}")
+    print(f"   Output: {output_dir}")
+    print(f"   Images per composition: {images_per_composition}")
+    print(f"   Objects per image: {objects_per_image}")
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Get all single object images
+    image_files = []
+    for ext in ["*.jpg", "*.jpeg", "*.png", "*.bmp"]:
+        image_files.extend(glob.glob(os.path.join(single_object_dir, ext)))
+
+    if not image_files:
+        print(f"⚠️  No images found in {single_object_dir}")
+        return
+
+    # Create compositions
+    canvas_size = (800, 600)
+
+    for i in range(images_per_composition):
+        # Create blank canvas
+        canvas = Image.new("RGB", canvas_size, (240, 240, 240))
+
+        # Determine number of objects for this image
+        num_objects = random.randint(objects_per_image[0], objects_per_image[1])
+
+        for j in range(num_objects):
+            # Select random image
+            img_path = random.choice(image_files)
+
+            try:
+                # Load and resize object
+                obj_img = Image.open(img_path).convert("RGBA")
+
+                # Random resize (50-150% of original)
+                scale = random.uniform(0.5, 1.5)
+                new_size = (int(obj_img.width * scale), int(obj_img.height * scale))
+                obj_img = obj_img.resize(new_size, Image.Resampling.LANCZOS)
+
+                # Ensure object fits on canvas
+                max_x = max(0, canvas_size[0] - obj_img.width)
+                max_y = max(0, canvas_size[1] - obj_img.height)
+
+                if max_x > 0 and max_y > 0:
+                    # Random position
+                    x = random.randint(0, max_x)
+                    y = random.randint(0, max_y)
+
+                    # Apply random brightness/contrast
+                    if random.random() > 0.5:
+                        enhancer = ImageEnhance.Brightness(obj_img)
+                        obj_img = enhancer.enhance(random.uniform(0.8, 1.2))
+
+                    if random.random() > 0.5:
+                        enhancer = ImageEnhance.Contrast(obj_img)
+                        obj_img = enhancer.enhance(random.uniform(0.8, 1.2))
+
+                    # Paste object onto canvas
+                    canvas.paste(obj_img, (x, y), obj_img)
+
+            except Exception as e:
+                print(f"Warning: Could not process {img_path}: {e}")
+                continue
+
+        # Save composition
+        output_path = os.path.join(output_dir, f"multi_object_{i+1:04d}.jpg")
+        canvas.convert("RGB").save(output_path, "JPEG", quality=95)
+
+    print(
+        f"✅ Created {images_per_composition} multi-object test images in {output_dir}"
+    )
 
 
 # Helper function for easy model comparison
@@ -534,7 +667,7 @@ def compare_yolo11_models(
     test_images_dir: str = None,
 ) -> Dict:
     """
-    Compare multiple YOLO11 model variants.
+    Compare multiple YOLO11 model variants with CPU optimization.
 
     Args:
         dataset_yaml: Path to dataset YAML
@@ -551,6 +684,13 @@ def compare_yolo11_models(
     print(f"🔬 Comparing {len(model_variants)} YOLO11 models...")
     print(f"Models: {', '.join(model_variants)}")
 
+    # Check system capabilities
+    capabilities = YOLO11DefectDetector.check_system_capabilities()
+    print(
+        f"🖥️  System: {capabilities['recommended_device'].upper()} mode, "
+        f"{capabilities['cpu_cores']} CPU cores"
+    )
+
     results = {}
 
     for variant in model_variants:
@@ -560,9 +700,27 @@ def compare_yolo11_models(
             # Create detector
             detector = YOLO11DefectDetector(variant)
 
+            # CPU-optimized training parameters
+            training_kwargs = {}
+            if not capabilities["cuda_available"]:
+                training_kwargs.update(
+                    {
+                        "batch": 4,
+                        "workers": 2,
+                        "patience": 15,
+                        "device": "cpu",
+                        "amp": False,
+                        "cache": False,
+                    }
+                )
+
             # Train model
             best_weights = detector.train(
-                dataset_yaml=dataset_yaml, epochs=epochs, name=f"{variant}_comparison"
+                dataset_yaml=dataset_yaml,
+                epochs=epochs,
+                project="trained_models",
+                name=f"{variant}_comparison",
+                **training_kwargs,
             )
 
             # Evaluate if test directory provided
@@ -585,7 +743,7 @@ def compare_yolo11_models(
 
 def evaluate_yolo11_model(detector: YOLO11DefectDetector, test_dir: str) -> Dict:
     """
-    Evaluate YOLO11 model on test directory.
+    Evaluate YOLO11 model on test directory with CPU optimization.
 
     Args:
         detector: Loaded YOLO11DefectDetector instance
@@ -650,3 +808,55 @@ def evaluate_yolo11_model(detector: YOLO11DefectDetector, test_dir: str) -> Dict
         results["avg_inference_time"] = sum(inference_times) / len(inference_times)
 
     return results
+
+
+def quick_cpu_training_test():
+    """Quick test for CPU training setup."""
+    print("🔍 Testing CPU training setup...")
+
+    try:
+        # Check system capabilities
+        capabilities = YOLO11DefectDetector.check_system_capabilities()
+
+        print(f"✅ System check complete:")
+        print(f"   CUDA Available: {capabilities['cuda_available']}")
+        print(f"   CPU Cores: {capabilities['cpu_cores']}")
+        print(f"   Recommended Device: {capabilities['recommended_device']}")
+        print(f"   Recommended Batch Size: {capabilities['recommended_batch_size']}")
+
+        # Test model loading
+        detector = YOLO11DefectDetector("yolo11n")
+        print(f"✅ Model loading test passed")
+
+        # Get recommendations for CPU
+        cpu_models = YOLO11DefectDetector.recommend_model_for_use_case("cpu")
+        print(f"✅ CPU-friendly models: {cpu_models}")
+
+        return True
+
+    except Exception as e:
+        print(f"❌ CPU training test failed: {e}")
+        return False
+
+
+if __name__ == "__main__":
+    # Run quick tests
+    print("=" * 50)
+    print("YOLO11 DEFECT DETECTOR - SYSTEM CHECK")
+    print("=" * 50)
+
+    quick_cpu_training_test()
+
+    # Show available models
+    print(f"\n📋 Available Models:")
+    models = YOLO11DefectDetector.list_available_models()
+    for variant, info in models.items():
+        if info["specs"]:
+            print(
+                f"   {variant}: {info['specs']['size']} - {info['specs']['use_case']}"
+            )
+
+    print(f"\n💡 Recommendations:")
+    for use_case in ["cpu", "production", "research"]:
+        recommendations = YOLO11DefectDetector.recommend_model_for_use_case(use_case)
+        print(f"   {use_case.title()}: {recommendations}")
