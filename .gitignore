@@ -12,3 +12,4 @@ yolo_dataset/
 trained_models/
 realistic_training_data/
 yolo_dataset_realistic/
+venv/
