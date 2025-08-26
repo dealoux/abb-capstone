@@ -17,29 +17,13 @@ class YOLO11DefectDetector:
         # Available YOLO11 model variants
         self.available_models = {
             # Detection models
-            "yolo11n": "yolo11n.pt",
             "yolo11s": "yolo11s.pt",
-            "yolo11m": "yolo11m.pt",
-            "yolo11l": "yolo11l.pt",
-            "yolo11x": "yolo11x.pt",
             # Segmentation models
-            "yolo11n-seg": "yolo11n-seg.pt",
             "yolo11s-seg": "yolo11s-seg.pt",
-            "yolo11m-seg": "yolo11m-seg.pt",
-            "yolo11l-seg": "yolo11l-seg.pt",
-            "yolo11x-seg": "yolo11x-seg.pt",
             # Oriented Bounding Box models
-            "yolo11n-obb": "yolo11n-obb.pt",
             "yolo11s-obb": "yolo11s-obb.pt",
-            "yolo11m-obb": "yolo11m-obb.pt",
-            "yolo11l-obb": "yolo11l-obb.pt",
-            "yolo11x-obb": "yolo11x-obb.pt",
             # Classification models
-            "yolo11n-cls": "yolo11n-cls.pt",
             "yolo11s-cls": "yolo11s-cls.pt",
-            "yolo11m-cls": "yolo11m-cls.pt",
-            "yolo11l-cls": "yolo11l-cls.pt",
-            "yolo11x-cls": "yolo11x-cls.pt",
         }
 
         # Model characteristics for user guidance

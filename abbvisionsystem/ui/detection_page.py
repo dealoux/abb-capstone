@@ -217,7 +217,7 @@ def _get_model_instance(model_type):
             },
         },
         "defect_yolo": {
-            "path": "yolo_defect_detector/weights/best.pt",
+            "path": None,  # Let YOLODefectModel auto-discover
             "class": YOLODefectModel,
             "extra_args": {},
         },
@@ -231,56 +231,44 @@ def _get_model_instance(model_type):
 
     config = model_configs[model_type]
 
-    # Construct full path with multiple fallback options
+    # Handle YOLO model with auto-discovery
+    if model_type == "defect_yolo":
+        model = YOLODefectModel()  # Auto-discover best model
+
+        # Load the model
+        if not model.load():
+            raise RuntimeError(f"Failed to load YOLO model")
+
+        # Show model info in sidebar
+        model_info = model.get_model_info()
+        st.sidebar.success(f"✅ YOLO Model Loaded")
+        st.sidebar.info(f"📍 Path: {os.path.basename(model_info['model_path'])}")
+        st.sidebar.info(f"📦 Size: {model_info.get('file_size_mb', 0):.1f} MB")
+
+        # Show available models
+        available_models = model.get_available_models()
+        if available_models:
+            st.sidebar.info(f"🎯 Found {len(available_models)} trained models")
+            with st.sidebar.expander("📋 Available Models"):
+                for i, model_data in enumerate(available_models[:5]):  # Show top 5
+                    status = (
+                        "🟢 ACTIVE"
+                        if model_data["path"] == model_info["model_path"]
+                        else ""
+                    )
+                    st.write(f"{status} **{model_data['name']}**")
+                    st.write(f"   Size: {model_data['size_mb']:.1f} MB")
+                    st.write(
+                        f"   Modified: {time.strftime('%Y-%m-%d %H:%M', time.localtime(model_data['modified']))}"
+                    )
+
+        return model
+
+    # Handle other model types (existing logic)
     model_path = os.path.join(MODEL_BASE_PATH, config["path"])
 
-    # Check if model file exists with enhanced fallback logic
     if not os.path.exists(model_path):
-        if model_type == "defect_yolo":
-            # Try multiple possible paths for YOLO model from training pipeline
-            alt_paths = [
-                # From training pipeline output
-                os.path.join(
-                    MODEL_BASE_PATH, "yolo_defect_detector", "weights", "best.pt"
-                ),
-                os.path.join(
-                    MODEL_BASE_PATH, "yolo_defect_detector", "weights", "last.pt"
-                ),
-                # Direct path
-                os.path.join(MODEL_BASE_PATH, "best.pt"),
-                os.path.join(MODEL_BASE_PATH, "yolo_best.pt"),
-                # Current directory fallbacks
-                "best.pt",
-                "yolo_defect_detector/weights/best.pt",
-                # Pretrained fallback
-                "yolov8n.pt",
-            ]
-
-            model_found = False
-            for alt_path in alt_paths:
-                if os.path.exists(alt_path):
-                    model_path = alt_path
-                    model_found = True
-                    st.sidebar.info(f"📍 Using model: {os.path.basename(alt_path)}")
-                    break
-
-            if not model_found:
-                # Try to download yolov8n.pt as ultimate fallback
-                try:
-                    from ultralytics import YOLO
-
-                    st.sidebar.warning(
-                        "⚠️ No trained model found, using YOLOv8n pretrained"
-                    )
-                    model_path = "yolov8n.pt"
-                    # This will download yolov8n.pt if it doesn't exist
-                    YOLO(model_path)
-                except Exception as e:
-                    raise FileNotFoundError(
-                        f"YOLO model not found and cannot download fallback. Tried: {alt_paths}"
-                    )
-        else:
-            raise FileNotFoundError(f"Model file not found: {model_path}")
+        raise FileNotFoundError(f"Model file not found: {model_path}")
 
     # Initialize the appropriate model class
     model_class = config["class"]
