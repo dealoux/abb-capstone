@@ -6,11 +6,10 @@ import streamlit as st
 import numpy as np
 import cv2
 
-from abbvisionsystem.models.taco_model import TACOModel
 from abbvisionsystem.models.defect_detection_model import DefectDetectionModel
 from abbvisionsystem.models.yolo_model import YOLODefectModel
 
-from abbvisionsystem.camera.camera import CognexCamera, BaslerCamera, WebcamCamera
+from abbvisionsystem.camera.camera import BaslerCamera, WebcamCamera
 from abbvisionsystem.preprocessing.preprocessing import (
     prepare_for_detection,
     apply_image_enhancement,
@@ -43,14 +42,12 @@ def detection_system_page():
             [
                 "YOLO Defect Detection (Multi-object)",
                 "ResNet Defect Classification (Single object)",
-                "TACO Waste Sorting",
             ],
         )
 
         model_type_map = {
             "YOLO Defect Detection (Multi-object)": "defect_yolo",
             "ResNet Defect Classification (Single object)": "defect_classification",
-            "TACO Waste Sorting": "taco",
         }
 
         # Input selection
@@ -202,11 +199,6 @@ def _get_model_instance(model_type):
 
     # Map of model types to their respective model paths and classes
     model_configs = {
-        "taco": {
-            "path": "ssd_mobilenet_v2_taco_2018_03_29.pb",
-            "class": TACOModel,
-            "extra_args": {},
-        },
         "defect_classification": {
             "path": "resnet_defect_classifier.keras",
             "class": DefectDetectionModel,
@@ -217,7 +209,7 @@ def _get_model_instance(model_type):
             },
         },
         "defect_yolo": {
-            "path": None,  # Let YOLODefectModel auto-discover
+            "path": "yolo_defect_detector/weights/best.pt",
             "class": YOLODefectModel,
             "extra_args": {},
         },
@@ -231,44 +223,56 @@ def _get_model_instance(model_type):
 
     config = model_configs[model_type]
 
-    # Handle YOLO model with auto-discovery
-    if model_type == "defect_yolo":
-        model = YOLODefectModel()  # Auto-discover best model
-
-        # Load the model
-        if not model.load():
-            raise RuntimeError(f"Failed to load YOLO model")
-
-        # Show model info in sidebar
-        model_info = model.get_model_info()
-        st.sidebar.success(f"✅ YOLO Model Loaded")
-        st.sidebar.info(f"📍 Path: {os.path.basename(model_info['model_path'])}")
-        st.sidebar.info(f"📦 Size: {model_info.get('file_size_mb', 0):.1f} MB")
-
-        # Show available models
-        available_models = model.get_available_models()
-        if available_models:
-            st.sidebar.info(f"🎯 Found {len(available_models)} trained models")
-            with st.sidebar.expander("📋 Available Models"):
-                for i, model_data in enumerate(available_models[:5]):  # Show top 5
-                    status = (
-                        "🟢 ACTIVE"
-                        if model_data["path"] == model_info["model_path"]
-                        else ""
-                    )
-                    st.write(f"{status} **{model_data['name']}**")
-                    st.write(f"   Size: {model_data['size_mb']:.1f} MB")
-                    st.write(
-                        f"   Modified: {time.strftime('%Y-%m-%d %H:%M', time.localtime(model_data['modified']))}"
-                    )
-
-        return model
-
-    # Handle other model types (existing logic)
+    # Construct full path with multiple fallback options
     model_path = os.path.join(MODEL_BASE_PATH, config["path"])
 
+    # Check if model file exists with enhanced fallback logic
     if not os.path.exists(model_path):
-        raise FileNotFoundError(f"Model file not found: {model_path}")
+        if model_type == "defect_yolo":
+            # Try multiple possible paths for YOLO model from training pipeline
+            alt_paths = [
+                # From training pipeline output
+                os.path.join(
+                    MODEL_BASE_PATH, "yolo_defect_detector", "weights", "best.pt"
+                ),
+                os.path.join(
+                    MODEL_BASE_PATH, "yolo_defect_detector", "weights", "last.pt"
+                ),
+                # Direct path
+                os.path.join(MODEL_BASE_PATH, "best.pt"),
+                os.path.join(MODEL_BASE_PATH, "yolo_best.pt"),
+                # Current directory fallbacks
+                "best.pt",
+                "yolo_defect_detector/weights/best.pt",
+                # Pretrained fallback
+                "yolo11s.pt",
+            ]
+
+            model_found = False
+            for alt_path in alt_paths:
+                if os.path.exists(alt_path):
+                    model_path = alt_path
+                    model_found = True
+                    st.sidebar.info(f"📍 Using model: {os.path.basename(alt_path)}")
+                    break
+
+            if not model_found:
+                # Try to download yolov8n.pt as ultimate fallback
+                try:
+                    from ultralytics import YOLO
+
+                    st.sidebar.warning(
+                        "⚠️ No trained model found, using YOLOv8n pretrained"
+                    )
+                    model_path = "yolov8n.pt"
+                    # This will download yolov8n.pt if it doesn't exist
+                    YOLO(model_path)
+                except Exception as e:
+                    raise FileNotFoundError(
+                        f"YOLO model not found and cannot download fallback. Tried: {alt_paths}"
+                    )
+        else:
+            raise FileNotFoundError(f"Model file not found: {model_path}")
 
     # Initialize the appropriate model class
     model_class = config["class"]
@@ -288,29 +292,9 @@ def _render_camera_interface(
 ):
     """Render camera interface section with YOLO support"""
     st.subheader("Camera Configuration")
-    camera_type = st.selectbox("Camera Type", ["Cognex", "Basler", "Webcam (Fallback)"])
+    camera_type = st.selectbox("Camera Type", ["Basler", "Webcam"])
 
-    if camera_type == "Cognex":
-        ip_address = st.text_input("Camera IP Address", "192.168.1.100")
-        port = st.text_input("Port", "80")
-        username = st.text_input("Username (if required)")
-        password = st.text_input("Password (if required)", type="password")
-
-        connect_button = st.button("Connect to Camera")
-        if connect_button:
-            st.session_state.camera = CognexCamera(
-                ip_address=ip_address,
-                port=port,
-                username=username if username else None,
-                password=password if password else None,
-            )
-
-            if st.session_state.camera.connect():
-                st.success("Camera connected successfully!")
-            else:
-                st.error("Failed to connect to camera. Check settings and try again.")
-
-    elif camera_type == "Basler":
+    if camera_type == "Basler":
         basler_device_index = st.number_input(
             "Basler Device Index",
             min_value=0,
@@ -333,7 +317,7 @@ def _render_camera_interface(
                     "Failed to connect to Basler camera. Check if the camera is properly connected and Pylon SDK is installed."
                 )
 
-    else:  # Webcam
+    elif camera_type == "Webcam":
         webcam_id = st.number_input("Webcam ID", min_value=0, max_value=10, value=0)
         connect_button = st.button("Connect to Webcam")
 

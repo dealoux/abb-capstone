@@ -15,7 +15,7 @@ from abbvisionsystem.camera.video_processor import (
 )
 from abbvisionsystem.models.yolo_model import YOLODefectModel
 from abbvisionsystem.models.defect_detection_model import DefectDetectionModel
-from abbvisionsystem.camera.camera import CognexCamera, BaslerCamera, WebcamCamera
+from abbvisionsystem.camera.camera import BaslerCamera, WebcamCamera
 
 
 def video_detection_page():

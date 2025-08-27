@@ -1,10 +1,9 @@
-"""YOLO-based defect detection model for app integration."""
-
 import os
 import json
 import logging
 import numpy as np
 import cv2
+import glob
 from abbvisionsystem.models.base_model import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -26,15 +25,17 @@ class YOLODefectModel(BaseModel):
         }
 
     def _find_best_trained_model(self):
-        """Automatically find the best trained YOLO model."""
-        # Search paths in order of preference
+        """Automatically find the best trained YOLO model with enhanced fallback."""
+        # Search paths in order of preference - prioritize working models
         search_paths = [
-            # From training pipeline (yolo11s training)
+            # Legacy working models first (from old implementation)
+            "trained_models/yolo_defect_detector/weights/best.pt",
+            "trained_models/yolo_defect_detector/weights/last.pt",
+            # From new training pipeline (yolo11s training)
             "yolo11_trained_models/yolo11s_defect_detector/weights/best.pt",
             "yolo11_trained_models/yolo11n_defect_detector/weights/best.pt",
             "yolo11_trained_models/yolo11m_defect_detector/weights/best.pt",
-            # Legacy training paths
-            "trained_models/yolo_defect_detector/weights/best.pt",
+            # Other legacy paths
             "trained_models/yolo11s_defect_detector/weights/best.pt",
             "trained_models/yolo11n_defect_detector/weights/best.pt",
             "trained_models/yolo11m_defect_detector/weights/best.pt",
@@ -45,9 +46,9 @@ class YOLODefectModel(BaseModel):
             "best.pt",
             "yolo_best.pt",
             "yolo11s_best.pt",
-            # Fallback to pretrained
+            # Fallback to pretrained (these should work reliably)
+            "yolov8n.pt",  # More stable than yolo11s
             "yolo11s.pt",
-            "yolov8n.pt",
         ]
 
         for path in search_paths:
@@ -55,9 +56,9 @@ class YOLODefectModel(BaseModel):
                 logger.info(f"Found trained model: {path}")
                 return path
 
-        # If no trained model found, return default path (will use pretrained)
+        # If no trained model found, return default path that will trigger download
         logger.warning("No trained model found, will attempt to use pretrained model")
-        return "yolo11s.pt"
+        return "yolov8n.pt"  # Use more stable v8 as fallback
 
     def get_available_models(self):
         """Get list of all available trained models."""
@@ -65,12 +66,10 @@ class YOLODefectModel(BaseModel):
 
         # Search for all possible trained models
         search_patterns = [
+            "trained_models/*/weights/best.pt",  # Legacy models first
             "yolo11_trained_models/*/weights/best.pt",
-            "trained_models/*/weights/best.pt",
             "cpu_trained_models/*/weights/best.pt",
         ]
-
-        import glob
 
         for pattern in search_patterns:
             found_models = glob.glob(pattern)
@@ -108,6 +107,9 @@ class YOLODefectModel(BaseModel):
                 ):
                     logger.info(f"Using alternative model: {alternative_path}")
                     self.model_path = alternative_path
+                elif self.model_path in ["yolov8n.pt", "yolo11s.pt"]:
+                    # For pretrained models, let YOLO download them
+                    logger.info(f"Downloading pretrained model: {self.model_path}")
                 else:
                     logger.error(f"No valid model found. Tried: {self.model_path}")
                     return False
@@ -116,10 +118,13 @@ class YOLODefectModel(BaseModel):
             self.loaded = True
 
             # Log model info
-            model_size = os.path.getsize(self.model_path) / (1024 * 1024)
-            logger.info(f"YOLO model loaded successfully!")
-            logger.info(f"  Path: {self.model_path}")
-            logger.info(f"  Size: {model_size:.1f} MB")
+            if os.path.exists(self.model_path):
+                model_size = os.path.getsize(self.model_path) / (1024 * 1024)
+                logger.info(f"YOLO model loaded successfully!")
+                logger.info(f"  Path: {self.model_path}")
+                logger.info(f"  Size: {model_size:.1f} MB")
+            else:
+                logger.info(f"YOLO model downloaded and loaded: {self.model_path}")
 
             # Show available models for reference
             available_models = self.get_available_models()
@@ -135,62 +140,107 @@ class YOLODefectModel(BaseModel):
             return False
 
     def predict(self, image, conf_threshold=0.25, iou_threshold=0.45):
-        """Run prediction with YOLO model - Updated to match training pipeline format."""
+        """Run prediction with YOLO model - Enhanced for multi-object detection."""
         if not self.loaded:
             logger.warning("Model not loaded. Call load() first.")
             return None
 
         try:
-            # Handle different input types
+            # Handle different input types with better error checking
             if isinstance(image, str):
-                # If image is a path, load it
+                if not os.path.exists(image):
+                    logger.error(f"Image file not found: {image}")
+                    return self._empty_result()
                 image_array = cv2.imread(image)
                 if image_array is None:
                     logger.error(f"Could not load image from path: {image}")
-                    return None
+                    return self._empty_result()
             elif isinstance(image, np.ndarray):
-                # If image is already an array, use it directly
-                image_array = image
+                image_array = image.copy()
             else:
-                logger.error("Invalid image input type")
-                return None
+                logger.error(f"Invalid image input type: {type(image)}")
+                return self._empty_result()
 
-            # Run YOLO inference with specified thresholds
-            results = self.model(
-                image_array, conf=conf_threshold, iou=iou_threshold, verbose=False
-            )[0]
+            # Ensure image is valid
+            if image_array.size == 0:
+                logger.error("Empty image provided")
+                return self._empty_result()
 
-            # Process results - Format compatible with detection page
+            # Run YOLO inference with enhanced error handling
+            try:
+                results = self.model(
+                    image_array,
+                    conf=conf_threshold,
+                    iou=iou_threshold,
+                    verbose=False,
+                    device="cpu",  # Force CPU for compatibility
+                )[0]
+            except Exception as inference_error:
+                logger.error(f"YOLO inference failed: {inference_error}")
+                return self._empty_result()
+
+            # Process results with enhanced validation
             if results.boxes is not None and len(results.boxes) > 0:
-                boxes = results.boxes.xyxy.cpu().numpy()  # x1, y1, x2, y2
-                scores = results.boxes.conf.cpu().numpy()
-                classes = results.boxes.cls.cpu().numpy().astype(int)
+                try:
+                    boxes = results.boxes.xyxy.cpu().numpy()  # x1, y1, x2, y2
+                    scores = results.boxes.conf.cpu().numpy()
+                    classes = results.boxes.cls.cpu().numpy().astype(int)
 
-                # Convert to relative coordinates for compatibility
-                h, w = image_array.shape[:2]
-                boxes_rel = boxes / [w, h, w, h]  # Normalize to [0, 1]
+                    # Validate arrays
+                    if len(boxes) == 0 or len(scores) == 0 or len(classes) == 0:
+                        logger.warning("Empty detection arrays")
+                        return self._empty_result()
 
-                return {
-                    "boxes": boxes_rel,
-                    "scores": scores,
-                    "classes": classes,
-                    "num_detections": len(boxes),
-                    "labels": [self.categories[cls]["name"] for cls in classes],
-                    "absolute_boxes": boxes,  # Keep absolute coordinates too
-                }
+                    # Convert to relative coordinates for compatibility
+                    h, w = image_array.shape[:2]
+                    if h == 0 or w == 0:
+                        logger.error("Invalid image dimensions")
+                        return self._empty_result()
+
+                    boxes_rel = boxes / [w, h, w, h]  # Normalize to [0, 1]
+
+                    # Create labels with validation
+                    labels = []
+                    for cls in classes:
+                        if cls in self.categories:
+                            labels.append(self.categories[cls]["name"])
+                        else:
+                            labels.append(f"Class {cls}")
+                            logger.warning(f"Unknown class ID: {cls}")
+
+                    detection_result = {
+                        "boxes": boxes_rel,
+                        "scores": scores,
+                        "classes": classes,
+                        "num_detections": len(boxes),
+                        "labels": labels,
+                        "absolute_boxes": boxes,
+                    }
+
+                    logger.info(f"Successfully detected {len(boxes)} objects")
+                    return detection_result
+
+                except Exception as processing_error:
+                    logger.error(f"Result processing failed: {processing_error}")
+                    return self._empty_result()
             else:
-                return {
-                    "boxes": np.array([]),
-                    "scores": np.array([]),
-                    "classes": np.array([]),
-                    "num_detections": 0,
-                    "labels": [],
-                    "absolute_boxes": np.array([]),
-                }
+                logger.info("No objects detected")
+                return self._empty_result()
 
         except Exception as e:
             logger.error(f"Prediction error: {str(e)}")
-            return None
+            return self._empty_result()
+
+    def _empty_result(self):
+        """Return empty detection result."""
+        return {
+            "boxes": np.array([]),
+            "scores": np.array([]),
+            "classes": np.array([]),
+            "num_detections": 0,
+            "labels": [],
+            "absolute_boxes": np.array([]),
+        }
 
     def visualize_detections(self, image, detections, threshold=0.25):
         """Draw detection results on image - Updated for compatibility."""
@@ -205,6 +255,10 @@ class YOLODefectModel(BaseModel):
             image_array = image.copy()
 
         h, w = image_array.shape[:2]
+
+        # Handle case where detections might be None or empty
+        if detections is None or detections.get("num_detections", 0) == 0:
+            return image_array
 
         if detections["num_detections"] > 0:
             for i in range(detections["num_detections"]):

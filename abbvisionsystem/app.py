@@ -3,12 +3,11 @@ import streamlit as st
 import numpy as np
 import cv2
 
-from abbvisionsystem.camera.camera import CognexCamera, BaslerCamera, WebcamCamera
+from abbvisionsystem.camera.camera import BaslerCamera, WebcamCamera
 from abbvisionsystem.preprocessing.preprocessing import (
     prepare_for_detection,
     apply_image_enhancement,
 )
-from abbvisionsystem.models.taco_model import TACOModel
 from abbvisionsystem.models.defect_detection_model import DefectDetectionModel
 from abbvisionsystem.models.yolo_model import YOLODefectModel
 from abbvisionsystem.utils.visualization import draw_detection_summary
@@ -81,7 +80,7 @@ def get_model(model_type="taco"):
                 # Current directory fallbacks
                 "best.pt",
                 "yolo_defect_detector/weights/best.pt",
-                "yolov8n.pt",
+                "yolo11s.pt",
             ]
 
             model_found = False
@@ -98,9 +97,9 @@ def get_model(model_type="taco"):
                     from ultralytics import YOLO
 
                     st.sidebar.warning(
-                        "⚠️ No trained model found, using YOLOv8n pretrained"
+                        "⚠️ No trained model found, using YOLOv11s pretrained"
                     )
-                    model_path = "yolov8n.pt"
+                    model_path = "yolo11s.pt"
                     # This will download yolov8n.pt if it doesn't exist
                     YOLO(model_path)
                 except Exception as e:

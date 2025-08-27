@@ -230,60 +230,6 @@ class BaslerCamera(BaseCamera):
         return True
 
 
-class CognexCamera(BaseCamera):
-    """Cognex camera implementation."""
-
-    def __init__(self, ip_address, port="80", username=None, password=None):
-        super().__init__()
-        self.ip_address = ip_address
-        self.port = port
-        self.username = username
-        self.password = password
-        self.url = f"http://{ip_address}:{port}"
-        self.auth = (username, password) if username and password else None
-
-    def connect(self):
-        """Connect to Cognex camera via REST API."""
-        try:
-            # Test connection by requesting camera info
-            response = requests.get(f"{self.url}/info", auth=self.auth, timeout=5)
-
-            if response.status_code == 200:
-                self.connected = True
-                logger.info(f"Connected to Cognex camera at {self.ip_address}")
-                return True
-            else:
-                logger.error(f"Failed to connect to camera: {response.status_code}")
-                return False
-
-        except Exception as e:
-            logger.error(f"Camera connection error: {str(e)}")
-            return False
-
-    def capture_image(self):
-        """Capture image from Cognex camera."""
-        if not self.connected:
-            logger.warning("Camera not connected. Call connect() first.")
-            return None
-
-        try:
-            # Request image from camera
-            response = requests.get(f"{self.url}/image", auth=self.auth, timeout=5)
-
-            if response.status_code == 200:
-                # Convert response content to image
-                img_array = np.asarray(bytearray(response.content), dtype=np.uint8)
-                image = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-                return image
-            else:
-                logger.error(f"Failed to capture image: {response.status_code}")
-                return None
-
-        except Exception as e:
-            logger.error(f"Image capture error: {str(e)}")
-            return None
-
-
 class WebcamCamera(BaseCamera):
     """Webcam camera implementation (fallback option)."""
 
