@@ -245,7 +245,7 @@ def _get_model_instance(model_type):
                 "best.pt",
                 "yolo_defect_detector/weights/best.pt",
                 # Pretrained fallback
-                "yolo11s.pt",
+                "yolo11s-cls.pt",
             ]
 
             model_found = False

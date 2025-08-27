@@ -19,7 +19,7 @@ class YOLODefectDetector:
         try:
             from ultralytics import YOLO
 
-            path = model_path or self.model_path or "yolo11s.pt"
+            path = model_path or self.model_path or "yolo11s-cls.pt"
             self.model = YOLO(path)
             self.model_path = path
             print(f"Model loaded from {path}")
@@ -40,7 +40,7 @@ class YOLODefectDetector:
     ):
         """Train YOLOv8 model with optimized parameters for defect detection."""
         if not self.model:
-            self.load_model("yolo11s.pt")
+            self.load_model("yolo11s-cls.pt")
 
         valid_params = {
             "data": dataset_yaml,

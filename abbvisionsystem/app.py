@@ -35,11 +35,6 @@ MODEL_BASE_PATH = "trained_models"
 def get_model(model_type="taco"):
     """Factory function to get appropriate model - Updated for pipeline compatibility"""
     model_configs = {
-        "taco": {
-            "path": "ssd_mobilenet_v2_taco_2018_03_29.pb",
-            "class": TACOModel,
-            "extra_args": {},
-        },
         "defect_classification": {
             "path": "resnet_defect_classifier.keras",
             "class": DefectDetectionModel,
@@ -80,7 +75,7 @@ def get_model(model_type="taco"):
                 # Current directory fallbacks
                 "best.pt",
                 "yolo_defect_detector/weights/best.pt",
-                "yolo11s.pt",
+                "yolo11s-cls.pt",
             ]
 
             model_found = False

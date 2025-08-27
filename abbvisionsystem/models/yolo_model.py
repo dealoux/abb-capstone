@@ -49,6 +49,7 @@ class YOLODefectModel(BaseModel):
             # Fallback to pretrained (these should work reliably)
             "yolov8n.pt",  # More stable than yolo11s
             "yolo11s.pt",
+            "yolo11s-cls.pt",
         ]
 
         for path in search_paths:
