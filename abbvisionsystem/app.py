@@ -75,7 +75,7 @@ def get_model(model_type="taco"):
                 # Current directory fallbacks
                 "best.pt",
                 "yolo_defect_detector/weights/best.pt",
-                "yolo11s-cls.pt",
+                "yolo11s.pt",
             ]
 
             model_found = False

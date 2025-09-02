@@ -38,11 +38,22 @@ class YOLODefectDetector:
         name: str = "yolo_defect_detector",
         **kwargs,
     ):
-        """Train YOLOv8 model with optimized parameters for defect detection."""
+        """Train YOLOv8 model with enhanced parameters optimized for defect detection with rich datasets."""
         if not self.model:
-            self.load_model("yolo11s-cls.pt")
+            # Try multiple model variants for better compatibility
+            model_variants = ["yolo11s-cls.pt"]
+            loaded = False
+            for variant in model_variants:
+                if self.load_model(variant):
+                    print(f"✅ Successfully loaded {variant}")
+                    loaded = True
+                    break
 
-        valid_params = {
+            if not loaded:
+                print("❌ Failed to load any YOLO model variant")
+                return None
+
+        enhanced_params = {
             "data": dataset_yaml,
             "epochs": epochs,
             "imgsz": imgsz,
@@ -51,53 +62,68 @@ class YOLODefectDetector:
             "name": name,
             "save": True,
             "plots": True,
-            "device": "cpu",  # Force CPU for compatibility
+            "device": "cpu",  # Ensure CPU compatibility
             "verbose": True,
-            # Data augmentation parameters
-            "hsv_h": 0.015,  # Hue augmentation
+            "patience": 50,  # Early stopping patience
+            "save_period": 10,  # Save checkpoint every 10 epochs
+            # Enhanced data augmentation for rich dataset
+            "hsv_h": 0.02,  # Slightly increased hue augmentation
             "hsv_s": 0.7,  # Saturation augmentation
             "hsv_v": 0.4,  # Value augmentation
-            "degrees": 10.0,  # Rotation augmentation
+            "degrees": 15.0,  # Increased rotation for better generalization
             "translate": 0.1,  # Translation augmentation
-            "scale": 0.2,  # Scale augmentation
-            "shear": 2.0,  # Shear augmentation
-            "perspective": 0.0,  # Perspective augmentation
-            "flipud": 0.0,  # Vertical flip
+            "scale": 0.3,  # Increased scale variation
+            "shear": 3.0,  # Increased shear augmentation
+            "perspective": 0.0,  # Keep perspective at 0
+            "flipud": 0.0,  # No vertical flip for industrial objects
             "fliplr": 0.5,  # Horizontal flip
             "mosaic": 1.0,  # Mosaic augmentation
             "mixup": 0.1,  # Mixup augmentation
             "copy_paste": 0.1,  # Copy-paste augmentation
-            # Optimization parameters
+            # Optimized training parameters for enhanced dataset
             "lr0": 0.01,  # Initial learning rate
             "lrf": 0.01,  # Final learning rate
-            "momentum": 0.937,  # Momentum
+            "momentum": 0.937,  # SGD momentum
             "weight_decay": 0.0005,  # Weight decay
             "warmup_epochs": 3,  # Warmup epochs
             "warmup_momentum": 0.8,  # Warmup momentum
             "warmup_bias_lr": 0.1,  # Warmup bias learning rate
-            # Loss weights
+            # Enhanced loss weights for defect detection
             "box": 0.05,  # Box loss gain
             "cls": 0.5,  # Class loss gain
             "dfl": 1.5,  # DFL loss gain
+            # Enhanced optimization for rich dataset
+            "optimizer": "SGD",  # Use SGD for stability
+            "close_mosaic": 10,  # Disable mosaic in last 10 epochs
         }
 
-        # Add early stopping through validation monitoring
-        print(f"🚀 Starting YOLOv8 training with enhanced parameters...")
-        print(f"   Dataset: {dataset_yaml}")
-        print(f"   Epochs: {epochs}")
-        print(f"   Image size: {imgsz}")
-        print(f"   Batch size: {batch}")
+        print(f"🚀 Starting Enhanced YOLOv8 training...")
+        print(f"   📊 Dataset: {dataset_yaml}")
+        print(f"   🔄 Epochs: {epochs}")
+        print(f"   📐 Image size: {imgsz}")
+        print(f"   📦 Batch size: {batch}")
+        print(f"   🎯 Enhanced augmentation: ON")
+        print(f"   ⚙️  Optimized for rich dataset: ON")
 
         try:
-            # Train the model
-            results = self.model.train(**valid_params)
+            # Train the model with enhanced parameters
+            results = self.model.train(**enhanced_params)
 
             # Update model path to best weights
             best_weights = os.path.join(project, name, "weights", "best.pt")
             if os.path.exists(best_weights):
                 self.model_path = best_weights
                 self.load_model(best_weights)
-                print(f"✅ Training completed! Best weights saved to: {best_weights}")
+                print(f"✅ Enhanced training completed! Best weights: {best_weights}")
+
+                # Print training summary
+                print(f"📈 Training Summary:")
+                print(f"   📊 Model: {self.model_path}")
+                print(
+                    f"   🎯 Enhanced features: Multi-object detection, Rich backgrounds"
+                )
+                print(f"   🔄 Augmentations: Enhanced for industrial scenarios")
+
             else:
                 # Fallback to last weights
                 last_weights = os.path.join(project, name, "weights", "last.pt")
@@ -109,30 +135,50 @@ class YOLODefectDetector:
             return self.model_path
 
         except Exception as e:
-            print(f"❌ Training failed: {str(e)}")
-            print("💡 Trying with reduced parameters...")
+            print(f"❌ Enhanced training failed: {str(e)}")
+            print("💡 Trying with reduced parameters for compatibility...")
 
-            # Fallback with minimal parameters
-            minimal_params = {
+            # Fallback with reduced parameters but still enhanced
+            fallback_params = {
                 "data": dataset_yaml,
                 "epochs": epochs,
                 "imgsz": imgsz,
-                "batch": batch,
+                "batch": max(4, batch // 2),  # Reduce batch size
                 "project": project,
-                "name": name,
+                "name": name + "_fallback",
                 "device": "cpu",
                 "verbose": True,
+                "patience": 30,
+                # Keep essential augmentations
+                "hsv_h": 0.015,
+                "hsv_s": 0.7,
+                "hsv_v": 0.4,
+                "degrees": 10.0,
+                "scale": 0.2,
+                "fliplr": 0.5,
+                "mosaic": 1.0,
             }
 
             try:
-                results = self.model.train(**minimal_params)
-                best_weights = os.path.join(project, name, "weights", "best.pt")
+                print(f"🔄 Retrying with fallback parameters...")
+                print(f"   📦 Reduced batch size: {fallback_params['batch']}")
+                results = self.model.train(**fallback_params)
+
+                best_weights = os.path.join(
+                    project, name + "_fallback", "weights", "best.pt"
+                )
                 if os.path.exists(best_weights):
                     self.model_path = best_weights
                     self.load_model(best_weights)
+                    print(f"✅ Fallback training successful: {best_weights}")
                 return self.model_path
+
             except Exception as e2:
                 print(f"❌ Fallback training also failed: {str(e2)}")
+                print("💡 Consider:")
+                print("   - Reducing batch size further (batch=2)")
+                print("   - Reducing image size (imgsz=320)")
+                print("   - Checking available memory")
                 raise e2
 
     def predict(
