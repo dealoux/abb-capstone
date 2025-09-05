@@ -233,17 +233,23 @@ def _get_model_instance(model_type):
             alt_paths = [
                 # From training pipeline output
                 os.path.join(
-                    MODEL_BASE_PATH, "yolo_defect_detector", "weights", "best.pt"
+                    MODEL_BASE_PATH,
+                    "enhanced_yolo_defect_detector",
+                    "weights",
+                    "best.pt",
                 ),
                 os.path.join(
-                    MODEL_BASE_PATH, "yolo_defect_detector", "weights", "last.pt"
+                    MODEL_BASE_PATH,
+                    "enhanced_yolo_defect_detector",
+                    "weights",
+                    "last.pt",
                 ),
                 # Direct path
                 os.path.join(MODEL_BASE_PATH, "best.pt"),
                 os.path.join(MODEL_BASE_PATH, "yolo_best.pt"),
                 # Current directory fallbacks
                 "best.pt",
-                "yolo_defect_detector/weights/best.pt",
+                "enhanced_yolo_defect_detector/weights/best.pt",
                 # Pretrained fallback
                 "yolo11s.pt",
             ]

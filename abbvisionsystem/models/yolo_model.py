@@ -29,23 +29,10 @@ class YOLODefectModel(BaseModel):
         # Search paths in order of preference - prioritize working models
         search_paths = [
             # Legacy working models first (from old implementation)
-            "trained_models/yolo_defect_detector/weights/best.pt",
-            "trained_models/yolo_defect_detector/weights/last.pt",
-            # From new training pipeline (yolo11s training)
-            "yolo11_trained_models/yolo11s_defect_detector/weights/best.pt",
-            "yolo11_trained_models/yolo11n_defect_detector/weights/best.pt",
-            "yolo11_trained_models/yolo11m_defect_detector/weights/best.pt",
-            # Other legacy paths
-            "trained_models/yolo11s_defect_detector/weights/best.pt",
-            "trained_models/yolo11n_defect_detector/weights/best.pt",
-            "trained_models/yolo11m_defect_detector/weights/best.pt",
-            # CPU training paths
-            "cpu_trained_models/yolo11s_cpu_defect_detector/weights/best.pt",
-            "cpu_trained_models/yolo11n_cpu_defect_detector/weights/best.pt",
+            "trained_models/enhanced_yolo_defect_detector/weights/best.pt",
+            "trained_models/enhanced_yolo_defect_detector/weights/last.pt",
             # Direct paths
             "best.pt",
-            "yolo_best.pt",
-            "yolo11s_best.pt",
             # Fallback to pretrained (these should work reliably)
             "yolov8n.pt",  # More stable than yolo11s
             "yolo11s.pt",
@@ -68,8 +55,6 @@ class YOLODefectModel(BaseModel):
         # Search for all possible trained models
         search_patterns = [
             "trained_models/*/weights/best.pt",  # Legacy models first
-            "yolo11_trained_models/*/weights/best.pt",
-            "cpu_trained_models/*/weights/best.pt",
         ]
 
         for pattern in search_patterns:
