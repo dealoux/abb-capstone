@@ -1,498 +1,682 @@
-"""Detection system UI page with multi-object support"""
+"""Detection system page with calibration-based coordinate system."""
 
-import os
-import time
 import streamlit as st
-import numpy as np
 import cv2
-
-from abbvisionsystem.models.defect_detection_model import DefectDetectionModel
-from abbvisionsystem.models.yolo_model import YOLODefectModel
-
+import numpy as np
+import os
 from abbvisionsystem.camera.camera import BaslerCamera, WebcamCamera
 from abbvisionsystem.preprocessing.preprocessing import (
     prepare_for_detection,
     apply_image_enhancement,
 )
 from abbvisionsystem.utils.visualization import draw_detection_summary
+from abbvisionsystem.camera.calibration import CameraCalibrator
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+def get_model(model_type="defect_yolo"):
+    """Get model instance from main app."""
+    from abbvisionsystem.app import get_model as app_get_model
+
+    return app_get_model(model_type)
 
 
 def detection_system_page():
-    """Main detection system interface with multi-object support."""
-    st.title("♻️ ABB Vision System")
-    st.write("Multi-object defect detection system with camera integration")
+    """Main detection system interface with calibration-based coordinates."""
+    st.title("🏠 Image Detection System")
+    st.markdown(
+        "Upload images or connect camera for real-time defect detection with calibrated measurements"
+    )
 
-    # Check calibration status
-    if st.session_state.camera and hasattr(st.session_state.camera, "calibrator"):
-        if st.session_state.camera.calibrator.calibration_result:
-            st.success("📷 Camera is calibrated")
-            scale = st.session_state.camera.calibrator.calibration_result.pixels_per_mm
-            if scale:
-                st.info(f"Scale: {scale:.2f} pixels/mm")
-        else:
-            st.warning("⚠️ Camera not calibrated. Go to Camera Calibration page.")
+    # Load calibrator instance (shared across app)
+    if "main_calibrator" not in st.session_state:
+        st.session_state.main_calibrator = CameraCalibrator()
+        # Try to load existing calibration
+        if os.path.exists("calibrations/camera_calibration.json"):
+            st.session_state.main_calibrator.load_calibration(
+                "calibrations/camera_calibration.json"
+            )
 
-    # Sidebar configuration
+    calibrator = st.session_state.main_calibrator
+
+    # Sidebar settings
     with st.sidebar:
-        st.header("Configuration")
+        st.header("⚙️ Detection Settings")
 
-        # Model selection - Updated for multi-object detection
+        # Model selection
         model_type = st.selectbox(
-            "Select Detection Model",
-            [
-                "YOLO Defect Detection (Multi-object)",
-                "ResNet Defect Classification (Single object)",
-            ],
+            "Detection Model", ["defect_yolo", "defect_classification"], index=0
         )
 
-        model_type_map = {
-            "YOLO Defect Detection (Multi-object)": "defect_yolo",
-            "ResNet Defect Classification (Single object)": "defect_classification",
-        }
+        # Detection parameters
+        conf_threshold = st.slider("Confidence Threshold", 0.0, 1.0, 0.25, 0.05)
+        iou_threshold = st.slider("IoU Threshold", 0.0, 1.0, 0.45, 0.05)
 
-        # Input selection
-        input_option = st.radio(
-            "Select Input Source", ["Upload Image", "Camera Integration"]
-        )
+        # Calibration status
+        st.subheader("📏 Calibration Status")
+        if calibrator.calibration_result:
+            st.success("✅ System Calibrated")
+            st.info(f"Scale: {calibrator.calibration_result.pixels_per_mm:.2f} px/mm")
+            st.info(f"Error: {calibrator.calibration_result.reprojection_error:.3f}")
 
-        # Image enhancement options
-        st.subheader("Image Enhancement")
-        brightness = st.slider("Brightness", -100, 100, 0)
-        contrast = st.slider("Contrast", -100, 100, 0)
-
-        # Detection settings
-        st.subheader("Detection Settings")
-        confidence_threshold = st.slider("Confidence Threshold", 0.1, 1.0, 0.25, 0.05)
-
-        # Multi-object specific settings
-        if "YOLO" in model_type:
-            iou_threshold = st.slider("IoU Threshold (NMS)", 0.1, 1.0, 0.45, 0.05)
-            max_detections = st.slider("Max Detections", 1, 50, 20)
-
-        # Apply enhancements button
-        enhance_button = st.button("Apply Settings")
-
-    # Load the selected model - Fixed import approach
-    try:
-        # Import the model factory function directly
-        import sys
-        import os
-
-        sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-        # Use the model factory logic directly
-        model = _get_model_instance(model_type_map[model_type])
-
-        # Show model info
-        st.sidebar.success(f"✅ {model_type} loaded")
-        if hasattr(model, "model_path"):
-            st.sidebar.info(f"Path: {os.path.basename(model.model_path)}")
-
-    except Exception as e:
-        st.error(f"Error loading model: {str(e)}")
-        st.info("💡 Make sure you've trained a model using the Training Center first!")
-        return
-
-    # Main content area with two columns
-    col1, col2 = st.columns(2)
-
-    # Input handling
-    with col1:
-        st.subheader("Input Image")
-
-        if input_option == "Upload Image":
-            uploaded_file = st.file_uploader(
-                "Choose an image...", type=["jpg", "jpeg", "png", "bmp"]
-            )
-
-            if uploaded_file is not None:
-                # Convert uploaded file to image
-                file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-                image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-
-                # Display the uploaded image
-                st.session_state.image = image
-                st.image(
-                    cv2.cvtColor(image, cv2.COLOR_BGR2RGB),
-                    caption="Uploaded Image",
-                    use_container_width=True,
-                )
-
-                if enhance_button or st.session_state.detections is None:
-                    # Apply enhancements if requested
-                    enhanced_image = apply_image_enhancement(
-                        image, brightness, contrast
-                    )
-
-                    # Prepare for detection
-                    detection_image = prepare_for_detection(enhanced_image)
-
-                    # Run detection with progress and YOLO-specific parameters
-                    with st.spinner("Running detection..."):
-                        if "YOLO" in model_type:
-                            # Pass YOLO-specific parameters
-                            detections = model.predict(
-                                detection_image,
-                                conf_threshold=confidence_threshold,
-                                iou_threshold=iou_threshold,
-                            )
-                        else:
-                            # Standard prediction for other models
-                            detections = model.predict(detection_image)
-
-                    if detections is not None:
-                        st.session_state.detections = detections
-
-                        # Show detection count
-                        num_detections = detections.get("num_detections", 0)
-                        if num_detections > 0:
-                            st.success(f"✅ Found {num_detections} object(s)")
-                        else:
-                            st.info("ℹ️ No objects detected")
-                    else:
-                        st.error("❌ Failed to perform detection on the image.")
-
-        else:  # Camera option
-            _render_camera_interface(
-                model,
-                brightness,
-                contrast,
-                confidence_threshold,
-                iou_threshold if "YOLO" in model_type else None,
-                model_type,
-            )
-
-    # Results display
-    with col2:
-        st.subheader("Detection Results")
-
-        if (
-            st.session_state.image is not None
-            and st.session_state.detections is not None
-        ):
-            # Visualize detections on the image
-            image_with_boxes = model.visualize_detections(
-                cv2.cvtColor(st.session_state.image, cv2.COLOR_BGR2RGB),
-                st.session_state.detections,
-                threshold=confidence_threshold,
-            )
-
-            # Display image with detection boxes
-            st.image(
-                image_with_boxes, caption="Detection Results", use_container_width=True
-            )
-
-            # Display detection summary
-            _render_detection_summary(
-                model, st.session_state.detections, confidence_threshold
-            )
-
-            # Save results
-            if st.button("💾 Save Results"):
-                _save_detection_results(image_with_boxes, st.session_state.detections)
-
-
-@st.cache_resource
-def _get_model_instance(model_type):
-    """Local model factory function to avoid circular imports"""
-    MODEL_BASE_PATH = "trained_models"
-
-    # Map of model types to their respective model paths and classes
-    model_configs = {
-        "defect_classification": {
-            "path": "resnet_defect_classifier.keras",
-            "class": DefectDetectionModel,
-            "extra_args": {
-                "class_mapping_path": os.path.join(
-                    MODEL_BASE_PATH, "class_mapping.json"
-                )
-            },
-        },
-        "defect_yolo": {
-            "path": "yolo_defect_detector/weights/best.pt",
-            "class": YOLODefectModel,
-            "extra_args": {},
-        },
-    }
-
-    # Check if model type is supported
-    if model_type not in model_configs:
-        raise ValueError(
-            f"Unknown model type: {model_type}. Available: {list(model_configs.keys())}"
-        )
-
-    config = model_configs[model_type]
-
-    # Construct full path with multiple fallback options
-    model_path = os.path.join(MODEL_BASE_PATH, config["path"])
-
-    # Check if model file exists with enhanced fallback logic
-    if not os.path.exists(model_path):
-        if model_type == "defect_yolo":
-            # Try multiple possible paths for YOLO model from training pipeline
-            alt_paths = [
-                # From training pipeline output
-                os.path.join(
-                    MODEL_BASE_PATH,
-                    "enhanced_yolo_defect_detector",
-                    "weights",
-                    "best.pt",
-                ),
-                os.path.join(
-                    MODEL_BASE_PATH,
-                    "enhanced_yolo_defect_detector",
-                    "weights",
-                    "last.pt",
-                ),
-                # Direct path
-                os.path.join(MODEL_BASE_PATH, "best.pt"),
-                os.path.join(MODEL_BASE_PATH, "yolo_best.pt"),
-                # Current directory fallbacks
-                "best.pt",
-                "enhanced_yolo_defect_detector/weights/best.pt",
-                # Pretrained fallback
-                "yolo11s.pt",
-            ]
-
-            model_found = False
-            for alt_path in alt_paths:
-                if os.path.exists(alt_path):
-                    model_path = alt_path
-                    model_found = True
-                    st.sidebar.info(f"📍 Using model: {os.path.basename(alt_path)}")
-                    break
-
-            if not model_found:
-                # Try to download yolov8n.pt as ultimate fallback
-                try:
-                    from ultralytics import YOLO
-
-                    st.sidebar.warning(
-                        "⚠️ No trained model found, using YOLOv8n pretrained"
-                    )
-                    model_path = "yolov8n.pt"
-                    # This will download yolov8n.pt if it doesn't exist
-                    YOLO(model_path)
-                except Exception as e:
-                    raise FileNotFoundError(
-                        f"YOLO model not found and cannot download fallback. Tried: {alt_paths}"
-                    )
+            # Option to reload calibration
+            if st.button("🔄 Reload Calibration"):
+                if os.path.exists("calibrations/camera_calibration.json"):
+                    if calibrator.load_calibration(
+                        "calibrations/camera_calibration.json"
+                    ):
+                        st.success("Calibration reloaded!")
+                        st.experimental_rerun()
         else:
-            raise FileNotFoundError(f"Model file not found: {model_path}")
-
-    # Initialize the appropriate model class
-    model_class = config["class"]
-    extra_args = config["extra_args"]
-
-    model = model_class(model_path=model_path, **extra_args)
-
-    # Load the model
-    if not model.load():
-        raise RuntimeError(f"Failed to load {model_type} model from {model_path}")
-
-    return model
-
-
-def _render_camera_interface(
-    model, brightness, contrast, confidence_threshold, iou_threshold=None, model_type=""
-):
-    """Render camera interface section with YOLO support"""
-    st.subheader("Camera Configuration")
-    camera_type = st.selectbox("Camera Type", ["Basler", "Webcam"])
-
-    if camera_type == "Basler":
-        basler_device_index = st.number_input(
-            "Basler Device Index",
-            min_value=0,
-            max_value=10,
-            value=0,
-            help="Index of the Basler camera to use (0 for first device)",
-        )
-
-        connect_button = st.button("Connect to Basler Camera")
-
-        if connect_button:
-            st.session_state.camera = BaslerCamera(
-                device_index=int(basler_device_index)
+            st.warning("⚠️ System Not Calibrated")
+            st.info(
+                "Go to Camera Calibration page to calibrate the system for accurate measurements"
             )
 
-            if st.session_state.camera.connect():
-                st.success("Basler camera connected successfully!")
-            else:
-                st.error(
-                    "Failed to connect to Basler camera. Check if the camera is properly connected and Pylon SDK is installed."
-                )
+        # Coordinate system settings
+        st.subheader("🎯 Coordinate Display")
+        show_coordinate_system = st.checkbox("Show Coordinate System", value=True)
+        show_measurements = st.checkbox("Show Object Measurements", value=True)
+        show_origin_lines = st.checkbox("Show Origin Connection Lines", value=True)
 
-    elif camera_type == "Webcam":
-        webcam_id = st.number_input("Webcam ID", min_value=0, max_value=10, value=0)
-        connect_button = st.button("Connect to Webcam")
+    # Main content area
+    tab1, tab2 = st.tabs(["📤 Image Upload", "📷 Camera Detection"])
 
-        if connect_button:
-            st.session_state.camera = WebcamCamera(camera_id=int(webcam_id))
-            if st.session_state.camera.connect():
-                st.success("Webcam connected successfully!")
-            else:
-                st.error("Failed to connect to webcam.")
+    with tab1:
+        image_detection_interface(
+            calibrator,
+            model_type,
+            conf_threshold,
+            iou_threshold,
+            show_coordinate_system,
+            show_measurements,
+            show_origin_lines,
+        )
 
-    # Capture button
-    if st.session_state.camera and st.session_state.camera.connected:
-        if st.button("📸 Capture and Detect"):
-            image = st.session_state.camera.capture_image()
+    with tab2:
+        camera_detection_interface(
+            calibrator,
+            model_type,
+            conf_threshold,
+            iou_threshold,
+            show_coordinate_system,
+            show_measurements,
+            show_origin_lines,
+        )
 
-            if image is not None:
-                # Store and display the captured image
-                st.session_state.image = image
-                st.image(
-                    cv2.cvtColor(image, cv2.COLOR_BGR2RGB),
-                    caption="Captured Image",
-                    use_container_width=True,
-                )
 
-                # Apply enhancements
-                enhanced_image = apply_image_enhancement(image, brightness, contrast)
+def image_detection_interface(
+    calibrator,
+    model_type,
+    conf_threshold,
+    iou_threshold,
+    show_coordinate_system,
+    show_measurements,
+    show_origin_lines,
+):
+    """Image upload detection interface."""
+    st.subheader("Upload Image for Detection")
 
-                # Prepare for detection
-                detection_image = prepare_for_detection(enhanced_image)
+    # Image upload
+    uploaded_file = st.file_uploader(
+        "Choose an image file",
+        type=["jpg", "jpeg", "png", "bmp"],
+        key="detection_upload",
+    )
 
-                # Run detection with YOLO-specific parameters
-                with st.spinner("Running detection..."):
-                    if "YOLO" in model_type:
+    if uploaded_file is not None:
+        try:
+            # Convert uploaded file to image
+            file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+            image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+
+            if image is None:
+                st.error("Failed to load image. Please check the file format.")
+                return
+
+            # Display original image
+            col1, col2 = st.columns([2, 1])
+
+            with col1:
+                st.subheader("Detection Results")
+
+                # Load and run model
+                try:
+                    model = get_model(model_type)
+
+                    # Run detection
+                    with st.spinner("Running detection..."):
                         detections = model.predict(
-                            detection_image,
-                            conf_threshold=confidence_threshold,
+                            image,
+                            conf_threshold=conf_threshold,
                             iou_threshold=iou_threshold,
                         )
-                    else:
-                        detections = model.predict(detection_image)
 
-                if detections is not None:
-                    st.session_state.detections = detections
+                    # Process results with calibration-based coordinates
+                    result_image = process_detection_results(
+                        image,
+                        detections,
+                        calibrator,
+                        show_coordinate_system,
+                        show_measurements,
+                        show_origin_lines,
+                    )
 
-                    # Show detection count
-                    num_detections = detections.get("num_detections", 0)
-                    if num_detections > 0:
-                        st.success(f"✅ Found {num_detections} object(s)")
-                    else:
-                        st.info("ℹ️ No objects detected")
+                    # Display result
+                    st.image(
+                        cv2.cvtColor(result_image, cv2.COLOR_BGR2RGB),
+                        use_column_width=True,
+                    )
+
+                except Exception as e:
+                    st.error(f"Detection failed: {str(e)}")
+                    st.image(
+                        cv2.cvtColor(image, cv2.COLOR_BGR2RGB),
+                        caption="Original Image",
+                        use_column_width=True,
+                    )
+
+            with col2:
+                st.subheader("📊 Detection Summary")
+
+                if (
+                    "detections" in locals()
+                    and detections
+                    and detections.get("num_detections", 0) > 0
+                ):
+                    display_detection_measurements(
+                        detections, calibrator, image.shape[:2]
+                    )
                 else:
-                    st.error("❌ Failed to perform detection on the image.")
-            else:
-                st.error("Failed to capture image from camera.")
+                    st.info("No objects detected")
+
+                # Show calibration info
+                st.subheader("📏 Measurement Info")
+                if calibrator.calibration_result:
+                    st.success(f"✅ Calibrated System")
+                    st.write(
+                        f"**Scale:** {calibrator.calibration_result.pixels_per_mm:.2f} pixels/mm"
+                    )
+                    st.write(
+                        f"**Resolution:** {1/calibrator.calibration_result.pixels_per_mm:.4f} mm/pixel"
+                    )
+                else:
+                    st.warning("⚠️ Uncalibrated - showing pixel coordinates")
+                    st.write(
+                        "Go to Camera Calibration to enable real-world measurements"
+                    )
+
+        except Exception as e:
+            st.error(f"Error processing image: {str(e)}")
 
 
-def _render_detection_summary(model, detections, confidence_threshold):
-    """Render detection summary with multi-object support"""
-    st.subheader("📊 Detection Summary")
+def camera_detection_interface(
+    calibrator,
+    model_type,
+    conf_threshold,
+    iou_threshold,
+    show_coordinate_system,
+    show_measurements,
+    show_origin_lines,
+):
+    """Camera-based detection interface."""
+    st.subheader("Live Camera Detection")
 
-    num_detections = detections.get("num_detections", 0)
-
-    if num_detections == 0:
-        st.info("No objects detected above confidence threshold")
-        return
-
-    # Filter detections by confidence
-    valid_detections = []
-    for i in range(num_detections):
-        if detections["scores"][i] >= confidence_threshold:
-            class_id = detections["classes"][i]
-            score = detections["scores"][i]
-
-            # Get class name - Updated for better compatibility
-            if hasattr(model, "categories"):
-                class_name = model.categories.get(class_id, {}).get(
-                    "name", f"Class {class_id}"
-                )
-            elif "labels" in detections and len(detections["labels"]) > i:
-                class_name = detections["labels"][i]
-            else:
-                class_name = f"Class {class_id}"
-
-            valid_detections.append(
-                {
-                    "class_id": class_id,
-                    "class_name": class_name,
-                    "confidence": score,
-                    "box": detections["boxes"][i] if "boxes" in detections else None,
-                }
-            )
-
-    if not valid_detections:
-        st.info("No objects detected above confidence threshold")
-        return
-
-    # Summary statistics
-    col1, col2, col3 = st.columns(3)
+    # Camera connection controls
+    col1, col2 = st.columns(2)
 
     with col1:
-        st.metric("Total Objects", len(valid_detections))
+        camera_type = st.selectbox(
+            "Camera Type", ["Basler Camera", "Webcam"], key="cam_type"
+        )
+        device_index = st.number_input(
+            "Device Index", min_value=0, max_value=5, value=0, key="cam_index"
+        )
 
     with col2:
-        defect_count = sum(
-            1 for d in valid_detections if d["class_name"].lower() == "defect"
-        )
-        st.metric("Defects Found", defect_count)
+        if st.button("📷 Connect Camera"):
+            try:
+                if camera_type == "Basler Camera":
+                    camera = BaslerCamera(device_index=device_index)
+                else:
+                    camera = WebcamCamera(camera_id=device_index)
 
-    with col3:
-        normal_count = len(valid_detections) - defect_count
-        st.metric("Normal Objects", normal_count)
+                if camera.connect():
+                    st.session_state.camera = camera
+                    st.success("Camera connected successfully!")
+                else:
+                    st.error("Failed to connect to camera")
+            except Exception as e:
+                st.error(f"Camera connection error: {str(e)}")
 
-    # Detailed results table
-    st.subheader("🔍 Detailed Results")
+        if st.button("🔌 Disconnect Camera"):
+            if hasattr(st.session_state, "camera") and st.session_state.camera:
+                st.session_state.camera.disconnect()
+                del st.session_state.camera
+                st.success("Camera disconnected")
 
-    results_data = []
-    for i, detection in enumerate(valid_detections):
-        results_data.append(
-            {
-                "Object #": i + 1,
-                "Class": detection["class_name"],
-                "Confidence": f"{detection['confidence']:.3f}",
-                "Status": (
-                    "⚠️ DEFECT"
-                    if detection["class_name"].lower() == "defect"
-                    else "✅ NORMAL"
-                ),
-            }
-        )
+    # Live detection
+    if (
+        hasattr(st.session_state, "camera")
+        and st.session_state.camera
+        and st.session_state.camera.connected
+    ):
+        st.success("📷 Camera Ready")
 
-    st.dataframe(results_data, use_container_width=True)
+        col_capture, col_live = st.columns(2)
 
-    # Alert for defects
-    if defect_count > 0:
-        st.error(f"🚨 {defect_count} defective object(s) detected!")
+        with col_capture:
+            if st.button("📸 Capture & Detect"):
+                try:
+                    # Capture image
+                    image = (
+                        st.session_state.camera.capture_corrected_image()
+                    )  # Uses auto-undistort if calibrated
+
+                    if image is not None:
+                        # Store captured image
+                        st.session_state.captured_image = image
+
+                        # Run detection
+                        model = get_model(model_type)
+                        detections = model.predict(
+                            image,
+                            conf_threshold=conf_threshold,
+                            iou_threshold=iou_threshold,
+                        )
+
+                        # Process with calibration
+                        result_image = process_detection_results(
+                            image,
+                            detections,
+                            calibrator,
+                            show_coordinate_system,
+                            show_measurements,
+                            show_origin_lines,
+                        )
+
+                        st.session_state.detection_result = result_image
+                        st.session_state.detections = detections
+
+                    else:
+                        st.error("Failed to capture image")
+
+                except Exception as e:
+                    st.error(f"Capture error: {str(e)}")
+
+        # Display results
+        if hasattr(st.session_state, "detection_result"):
+            st.subheader("Latest Detection Result")
+
+            col_result, col_measurements = st.columns([2, 1])
+
+            with col_result:
+                st.image(
+                    cv2.cvtColor(st.session_state.detection_result, cv2.COLOR_BGR2RGB),
+                    use_column_width=True,
+                )
+
+            with col_measurements:
+                st.subheader("📊 Measurements")
+                if (
+                    hasattr(st.session_state, "detections")
+                    and st.session_state.detections
+                ):
+                    display_detection_measurements(
+                        st.session_state.detections,
+                        calibrator,
+                        st.session_state.captured_image.shape[:2],
+                    )
     else:
-        st.success("✅ All objects appear normal")
+        st.info("Connect a camera to start live detection")
 
 
-def _save_detection_results(image_with_boxes, detections):
-    """Save detection results to file"""
+def process_detection_results(
+    image,
+    detections,
+    calibrator,
+    show_coordinate_system=True,
+    show_measurements=True,
+    show_origin_lines=True,
+):
+    """Process detection results with calibration-based coordinate system."""
+    result_image = image.copy()
+
+    # Get calibrated origin point
+    origin_point = get_calibrated_origin(calibrator, image.shape[:2])
+    ox, oy = origin_point
+
+    # Draw coordinate system if requested
+    if show_coordinate_system:
+        draw_coordinate_system(result_image, origin_point, calibrator)
+
+    # Process detections
+    if detections and detections.get("num_detections", 0) > 0:
+        for i in range(detections["num_detections"]):
+            try:
+                # Get bounding box
+                if (
+                    "absolute_boxes" in detections
+                    and len(detections["absolute_boxes"]) > 0
+                ):
+                    box = detections["absolute_boxes"][i]
+                else:
+                    # Convert from relative coordinates
+                    h, w = image.shape[:2]
+                    box = detections["boxes"][i] * [w, h, w, h]
+
+                x1, y1, x2, y2 = map(int, box)
+
+                # Calculate object center and dimensions
+                center_x = (x1 + x2) // 2
+                center_y = (y1 + y2) // 2
+                width = x2 - x1
+                height = y2 - y1
+
+                # Get object region for contour analysis
+                object_region = image[y1:y2, x1:x2]
+                if object_region.size > 0:
+                    # Find the most accurate object center using contours
+                    center_x, center_y, angle = find_object_center_and_orientation(
+                        object_region, (x1, y1)
+                    )
+
+                # Draw bounding box
+                class_id = detections["classes"][i] if "classes" in detections else 0
+                color = (
+                    (0, 0, 255) if class_id == 1 else (0, 255, 0)
+                )  # Red for defect, Green for normal
+                cv2.rectangle(result_image, (x1, y1), (x2, y2), color, 2)
+
+                # Draw object center
+                cv2.circle(result_image, (center_x, center_y), 4, (0, 0, 255), -1)
+
+                # Draw connection line to origin if requested
+                if show_origin_lines:
+                    cv2.line(
+                        result_image,
+                        (ox, oy),
+                        (center_x, center_y),
+                        (255, 255, 0),
+                        1,
+                        cv2.LINE_AA,
+                    )
+
+                # Calculate and display measurements
+                if show_measurements:
+                    display_object_measurements(
+                        result_image,
+                        (center_x, center_y),
+                        (width, height),
+                        origin_point,
+                        calibrator,
+                        i + 1,
+                        angle if "angle" in locals() else 0,
+                    )
+
+            except Exception as e:
+                logger.error(f"Error processing detection {i}: {e}")
+                continue
+
+    return result_image
+
+
+def get_calibrated_origin(calibrator, image_shape):
+    """Get the calibrated origin point or fallback to default."""
+    if calibrator.calibration_result and calibrator.calibration_images:
+        try:
+            # Get origin from first calibration image (first detected corner)
+            first_calib = calibrator.calibration_images[0]
+            if first_calib["corners"] is not None and len(first_calib["corners"]) > 0:
+                origin_point = tuple(first_calib["corners"][0].ravel().astype(int))
+                return origin_point
+        except Exception as e:
+            logger.warning(f"Could not get calibrated origin: {e}")
+
+    # Fallback to image center or default position
+    height, width = image_shape
+    return (width // 4, height // 4)  # Top-left quadrant as default
+
+
+def draw_coordinate_system(image, origin_point, calibrator):
+    """Draw coordinate system at the calibrated origin."""
+    ox, oy = origin_point
+
+    # Draw origin point (larger yellow circle like in calibration)
+    cv2.circle(image, (ox, oy), 8, (255, 255, 0), -1)
+
+    # Draw coordinate axes (matching calibration style)
+    axis_length = 100
+
+    # X-axis (Red) - horizontal right
+    cv2.arrowedLine(
+        image, (ox, oy), (ox + axis_length, oy), (0, 0, 255), 3, tipLength=0.1
+    )
+    # Y-axis (Green) - vertical down
+    cv2.arrowedLine(
+        image, (ox, oy), (ox, oy + axis_length), (0, 255, 0), 3, tipLength=0.1
+    )
+
+    # Add labels (matching calibration style)
+    cv2.putText(
+        image,
+        "O(0,0)",
+        (ox - 30, oy - 15),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        (255, 255, 0),
+        2,
+    )
+    cv2.putText(
+        image,
+        "X",
+        (ox + axis_length + 10, oy + 10),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.8,
+        (0, 0, 255),
+        2,
+    )
+    cv2.putText(
+        image,
+        "Y",
+        (ox - 15, oy + axis_length + 25),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.8,
+        (0, 255, 0),
+        2,
+    )
+
+
+def find_object_center_and_orientation(object_region, region_offset):
+    """Find accurate object center and orientation using contour analysis."""
     try:
-        # Create results directory if it doesn't exist
-        os.makedirs("results", exist_ok=True)
+        # Convert to grayscale
+        gray = cv2.cvtColor(object_region, cv2.COLOR_BGR2GRAY)
 
-        # Save image with bounding boxes
-        timestamp = int(time.time())
-        result_path = os.path.join("results", f"detection_{timestamp}.jpg")
+        # Threshold to create binary image
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-        cv2.imwrite(result_path, cv2.cvtColor(image_with_boxes, cv2.COLOR_RGB2BGR))
+        # Find contours
+        contours, _ = cv2.findContours(
+            binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
 
-        # Save detection data as JSON
-        import json
+        if contours:
+            # Get largest contour
+            largest_contour = max(contours, key=cv2.contourArea)
 
-        # Convert numpy arrays to lists for JSON serialization
-        detection_data = {}
-        for key, value in detections.items():
-            if isinstance(value, np.ndarray):
-                detection_data[key] = value.tolist()
+            # Get minimum area rectangle for orientation
+            rect = cv2.minAreaRect(largest_contour)
+            center = rect[0]
+            angle = rect[2]
+
+            # Convert to absolute coordinates
+            abs_center_x = int(center[0] + region_offset[0])
+            abs_center_y = int(center[1] + region_offset[1])
+
+            # Normalize angle
+            if rect[1][0] < rect[1][1]:
+                angle = angle + 90
+            angle = angle % 180
+
+            return abs_center_x, abs_center_y, angle
+    except:
+        pass
+
+    # Fallback to bounding box center
+    h, w = object_region.shape[:2]
+    return region_offset[0] + w // 2, region_offset[1] + h // 2, 0
+
+
+def display_object_measurements(
+    image, center, dimensions, origin_point, calibrator, obj_id, angle=0
+):
+    """Display object measurements on the image."""
+    center_x, center_y = center
+    width, height = dimensions
+    ox, oy = origin_point
+
+    # Calculate relative coordinates
+    rel_x_px = center_x - ox
+    rel_y_px = center_y - oy
+
+    # Convert to real-world coordinates if calibrated
+    if calibrator.calibration_result and calibrator.calibration_result.pixels_per_mm:
+        pixels_per_mm = calibrator.calibration_result.pixels_per_mm
+        rel_x_mm = rel_x_px / pixels_per_mm
+        rel_y_mm = rel_y_px / pixels_per_mm
+        width_mm = width / pixels_per_mm
+        height_mm = height / pixels_per_mm
+
+        coord_text = f"({rel_x_mm:.1f}, {rel_y_mm:.1f})mm"
+        dimensions_text = f"{width_mm:.1f}x{height_mm:.1f}mm"
+        unit = "mm"
+    else:
+        coord_text = f"({rel_x_px}, {rel_y_px})px"
+        dimensions_text = f"{width}x{height}px"
+        unit = "px"
+
+    # Draw measurements on image
+    y_offset = -60
+    cv2.putText(
+        image,
+        f"ID: {obj_id}",
+        (center_x - 30, center_y + y_offset),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.5,
+        (255, 255, 255),
+        2,
+    )
+    cv2.putText(
+        image,
+        coord_text,
+        (center_x - 60, center_y + y_offset + 20),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.5,
+        (0, 0, 255),
+        2,
+    )
+    cv2.putText(
+        image,
+        f"{angle:.1f}°",
+        (center_x - 30, center_y + y_offset + 40),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.5,
+        (255, 0, 255),
+        2,
+    )
+    cv2.putText(
+        image,
+        dimensions_text,
+        (center_x - 40, center_y + y_offset + 60),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.4,
+        (0, 255, 255),
+        2,
+    )
+
+
+def display_detection_measurements(detections, calibrator, image_shape):
+    """Display detection measurements in the sidebar."""
+    if not detections or detections.get("num_detections", 0) == 0:
+        st.info("No objects detected")
+        return
+
+    # Get origin and calibration info
+    origin_point = get_calibrated_origin(calibrator, image_shape)
+    ox, oy = origin_point
+
+    pixels_per_mm = None
+    unit = "px"
+    if calibrator.calibration_result and calibrator.calibration_result.pixels_per_mm:
+        pixels_per_mm = calibrator.calibration_result.pixels_per_mm
+        unit = "mm"
+        st.success(f"✅ Calibrated ({pixels_per_mm:.2f} px/mm)")
+    else:
+        st.warning("⚠️ Uncalibrated")
+
+    st.write(f"**Origin:** ({ox}, {oy}) pixels")
+    st.write("---")
+
+    # Display each detection
+    for i in range(detections["num_detections"]):
+        try:
+            # Get detection data
+            if "absolute_boxes" in detections and len(detections["absolute_boxes"]) > 0:
+                box = detections["absolute_boxes"][i]
             else:
-                detection_data[key] = value
+                h, w = image_shape
+                box = detections["boxes"][i] * [w, h, w, h]
 
-        json_path = os.path.join("results", f"detection_{timestamp}.json")
-        with open(json_path, "w") as f:
-            json.dump(detection_data, f, indent=2)
+            x1, y1, x2, y2 = map(int, box)
+            center_x = (x1 + x2) // 2
+            center_y = (y1 + y2) // 2
+            width = x2 - x1
+            height = y2 - y1
 
-        st.success(f"✅ Results saved!")
-        st.info(f"📁 Image: {result_path}")
-        st.info(f"📄 Data: {json_path}")
+            # Calculate measurements
+            rel_x_px = center_x - ox
+            rel_y_px = center_y - oy
 
-    except Exception as e:
-        st.error(f"❌ Failed to save results: {str(e)}")
+            if pixels_per_mm:
+                rel_x = rel_x_px / pixels_per_mm
+                rel_y = rel_y_px / pixels_per_mm
+                obj_width = width / pixels_per_mm
+                obj_height = height / pixels_per_mm
+                distance = np.sqrt(rel_x**2 + rel_y**2)
+            else:
+                rel_x = rel_x_px
+                rel_y = rel_y_px
+                obj_width = width
+                obj_height = height
+                distance = np.sqrt(rel_x_px**2 + rel_y_px**2)
+
+            # Get class info
+            class_id = detections["classes"][i] if "classes" in detections else 0
+            confidence = detections["scores"][i] if "scores" in detections else 0
+
+            # Display object info
+            st.write(f"**Object {i+1}:**")
+            st.write(f"- Position: ({rel_x:.1f}, {rel_y:.1f}) {unit}")
+            st.write(f"- Dimensions: {obj_width:.1f} × {obj_height:.1f} {unit}")
+            st.write(f"- Distance from origin: {distance:.1f} {unit}")
+            st.write(f"- Confidence: {confidence:.2f}")
+
+            # Show class if available
+            if hasattr(detections, "labels") and detections["labels"]:
+                st.write(f"- Class: {detections['labels'][i]}")
+            elif class_id == 1:
+                st.write(f"- Class: Defect")
+            else:
+                st.write(f"- Class: Normal")
+
+            st.write("---")
+
+        except Exception as e:
+            st.error(f"Error displaying object {i+1}: {str(e)}")
+
+
+if __name__ == "__main__":
+    detection_system_page()

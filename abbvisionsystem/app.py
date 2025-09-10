@@ -32,7 +32,7 @@ MODEL_BASE_PATH = "trained_models"
 
 
 @st.cache_resource
-def get_model(model_type="taco"):
+def get_model(model_type="defect_yolo"):
     """Factory function to get appropriate model - Updated for pipeline compatibility"""
     model_configs = {
         "defect_classification": {
@@ -45,7 +45,7 @@ def get_model(model_type="taco"):
             },
         },
         "defect_yolo": {
-            "path": "yolo_defect_detector/weights/best.pt",
+            "path": "enhanced_yolo_defect_detector/weights/best.pt",
             "class": YOLODefectModel,
             "extra_args": {},
         },
@@ -64,10 +64,16 @@ def get_model(model_type="taco"):
         if model_type == "defect_yolo":
             alt_paths = [
                 os.path.join(
-                    MODEL_BASE_PATH, "yolo_defect_detector", "weights", "best.pt"
+                    MODEL_BASE_PATH,
+                    "enhanced_yolo_defect_detector",
+                    "weights",
+                    "best.pt",
                 ),
                 os.path.join(
-                    MODEL_BASE_PATH, "yolo_defect_detector", "weights", "last.pt"
+                    MODEL_BASE_PATH,
+                    "enhanced_yolo_defect_detector",
+                    "weights",
+                    "last.pt",
                 ),
                 # Direct path
                 os.path.join(MODEL_BASE_PATH, "best.pt"),
@@ -87,7 +93,6 @@ def get_model(model_type="taco"):
                     break
 
             if not model_found:
-                # Try to download yolov8n.pt as ultimate fallback
                 try:
                     from ultralytics import YOLO
 
