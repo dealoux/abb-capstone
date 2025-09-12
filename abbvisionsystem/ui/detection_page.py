@@ -5,6 +5,8 @@ import cv2
 import numpy as np
 import os
 from abbvisionsystem.camera.camera import BaslerCamera, WebcamCamera
+from abbvisionsystem.models.defect_detection_model import DefectDetectionModel
+from abbvisionsystem.models.yolo_model import YOLODefectModel
 from abbvisionsystem.preprocessing.preprocessing import (
     prepare_for_detection,
     apply_image_enhancement,
@@ -16,11 +18,105 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def get_model(model_type="defect_yolo"):
-    """Get model instance from main app."""
-    from abbvisionsystem.app import get_model as app_get_model
+@st.cache_resource
+def _get_model(model_type):
+    """Local model factory function to avoid circular imports"""
+    MODEL_BASE_PATH = "trained_models"
 
-    return app_get_model(model_type)
+    # Map of model types to their respective model paths and classes
+    model_configs = {
+        "defect_classification": {
+            "path": "resnet_defect_classifier.keras",
+            "class": DefectDetectionModel,
+            "extra_args": {
+                "class_mapping_path": os.path.join(
+                    MODEL_BASE_PATH, "class_mapping.json"
+                )
+            },
+        },
+        "defect_yolo": {
+            "path": "enhanced_yolo_defect_detector/weights/best.pt",
+            "class": YOLODefectModel,
+            "extra_args": {},
+        },
+    }
+
+    # Check if model type is supported
+    if model_type not in model_configs:
+        raise ValueError(
+            f"Unknown model type: {model_type}. Available: {list(model_configs.keys())}"
+        )
+
+    config = model_configs[model_type]
+
+    # Construct full path with multiple fallback options
+    model_path = os.path.join(MODEL_BASE_PATH, config["path"])
+
+    # Check if model file exists with enhanced fallback logic
+    if not os.path.exists(model_path):
+        if model_type == "defect_yolo":
+            # Try multiple possible paths for YOLO model from training pipeline
+            alt_paths = [
+                # From training pipeline output
+                os.path.join(
+                    MODEL_BASE_PATH,
+                    "enhanced_yolo_defect_detector",
+                    "weights",
+                    "best.pt",
+                ),
+                os.path.join(
+                    MODEL_BASE_PATH,
+                    "enhanced_yolo_defect_detector",
+                    "weights",
+                    "last.pt",
+                ),
+                # Direct path
+                os.path.join(MODEL_BASE_PATH, "best.pt"),
+                os.path.join(MODEL_BASE_PATH, "yolo_best.pt"),
+                # Current directory fallbacks
+                "best.pt",
+                "enhanced_yolo_defect_detector/weights/best.pt",
+                # Pretrained fallback
+                "yolo11s.pt",
+            ]
+
+            model_found = False
+            for alt_path in alt_paths:
+                if os.path.exists(alt_path):
+                    model_path = alt_path
+                    model_found = True
+                    st.sidebar.info(f"📍 Using model: {os.path.basename(alt_path)}")
+                    break
+
+            if not model_found:
+                # Try to download yolov8n.pt as ultimate fallback
+                try:
+                    from ultralytics import YOLO
+
+                    st.sidebar.warning(
+                        "⚠️ No trained model found, using YOLOv8n pretrained"
+                    )
+                    model_path = "yolo11s.pt"
+                    # This will download yolov8n.pt if it doesn't exist
+                    YOLO(model_path)
+                except Exception as e:
+                    raise FileNotFoundError(
+                        f"YOLO model not found and cannot download fallback. Tried: {alt_paths}"
+                    )
+        else:
+            raise FileNotFoundError(f"Model file not found: {model_path}")
+
+    # Initialize the appropriate model class
+    model_class = config["class"]
+    extra_args = config["extra_args"]
+
+    model = model_class(model_path=model_path, **extra_args)
+
+    # Load the model
+    if not model.load():
+        raise RuntimeError(f"Failed to load {model_type} model from {model_path}")
+
+    return model
 
 
 def detection_system_page():
@@ -144,7 +240,7 @@ def image_detection_interface(
 
                 # Load and run model
                 try:
-                    model = get_model(model_type)
+                    model = _get_model(model_type)
 
                     # Run detection
                     with st.spinner("Running detection..."):
@@ -280,7 +376,7 @@ def camera_detection_interface(
                         st.session_state.captured_image = image
 
                         # Run detection
-                        model = get_model(model_type)
+                        model = _get_model(model_type)
                         detections = model.predict(
                             image,
                             conf_threshold=conf_threshold,
