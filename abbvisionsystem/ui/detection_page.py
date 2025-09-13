@@ -1,11 +1,14 @@
 """Detection system page with calibration-based coordinate system."""
 
+import datetime
+import glob
 import json
 from typing import Optional
 import streamlit as st
 import cv2
 import numpy as np
 import os
+from datetime import datetime  # Add this import
 from abbvisionsystem.camera.camera import BaslerCamera, WebcamCamera
 from abbvisionsystem.models.defect_detection_model import DefectDetectionModel
 from abbvisionsystem.models.yolo_model import YOLODefectModel
@@ -105,7 +108,6 @@ def detection_system_page():
 
     if "main_calibrator" not in st.session_state:
         st.session_state.main_calibrator = CameraCalibrator()
-        # Remove hardcoded calibration loading
         # Auto-load latest calibration if available
         try:
             latest_calibration = find_latest_calibration_file()
@@ -121,10 +123,14 @@ def detection_system_page():
     with st.sidebar:
         st.header("⚙️ Detection Settings")
 
-        # Model selection
+        # Model type selection
         model_type = st.selectbox(
-            "Detection Model", ["defect_yolo", "defect_classification"], index=0
+            "Detection Framework", ["defect_yolo", "defect_classification"], index=0
         )
+
+        # Model selection section for YOLO
+        if model_type == "defect_yolo":
+            model_selection_section()
 
         # Detection parameters
         conf_threshold = st.slider("Confidence Threshold", 0.0, 1.0, 0.25, 0.05)
@@ -162,13 +168,16 @@ def detection_system_page():
         show_measurements = st.checkbox("Show Object Measurements", value=True)
         show_origin_lines = st.checkbox("Show Origin Connection Lines", value=True)
 
-    # Main content area
+    # Main content area with dynamic model selection
+    selected_model_path = get_selected_model_path(model_type)
+
     tab1, tab2 = st.tabs(["📤 Image Upload", "📷 Camera Detection"])
 
     with tab1:
         image_detection_interface(
             calibrator,
             model_type,
+            selected_model_path,
             conf_threshold,
             iou_threshold,
             show_coordinate_system,
@@ -180,12 +189,712 @@ def detection_system_page():
         camera_detection_interface(
             calibrator,
             model_type,
+            selected_model_path,
             conf_threshold,
             iou_threshold,
             show_coordinate_system,
             show_measurements,
             show_origin_lines,
         )
+
+
+def model_selection_section():
+    """Handle YOLO model selection and management."""
+    st.subheader("🤖 YOLO Model Selection")
+
+    # Get available models
+    available_models = get_available_yolo_models()
+
+    # Current model status
+    if hasattr(st.session_state, "selected_model_path"):
+        current_model = st.session_state.selected_model_path
+        if os.path.exists(current_model):
+            st.success(f"✅ Model Loaded")
+            model_name = os.path.basename(current_model)
+            st.info(f"📁 Current: {model_name}")
+
+            # Show model size
+            model_size_mb = os.path.getsize(current_model) / (1024 * 1024)
+            st.info(f"📦 Size: {model_size_mb:.1f} MB")
+        else:
+            st.warning(f"⚠️ Model file not found: {os.path.basename(current_model)}")
+    else:
+        st.info("No model selected")
+
+    # Model categories
+    trained_models = available_models.get("trained", [])
+    pretrained_models = available_models.get("pretrained", [])
+
+    # Trained models section
+    if trained_models:
+        st.write("**🎯 Trained Models (Recommended)**")
+
+        # Create display names and paths
+        trained_options = ["None"] + [
+            f"{m['name']} ({m['size_mb']:.1f}MB)" for m in trained_models
+        ]
+        trained_paths = [None] + [m["path"] for m in trained_models]
+
+        selected_trained_idx = 0
+        if hasattr(st.session_state, "selected_model_path"):
+            current_path = st.session_state.selected_model_path
+            if current_path in trained_paths:
+                selected_trained_idx = trained_paths.index(current_path)
+
+        selected_trained = st.selectbox(
+            "Choose trained model:",
+            options=trained_options,
+            index=selected_trained_idx,
+            key="trained_model_selector",
+        )
+
+        if selected_trained != "None":
+            selected_path = trained_paths[trained_options.index(selected_trained)]
+
+            # Show model details
+            model_info = next(m for m in trained_models if m["path"] == selected_path)
+
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write(f"**Modified:** {model_info['date_str']}")
+                st.write(f"**Type:** {model_info['model_type']}")
+            with col2:
+                st.write(f"**Accuracy:** {model_info.get('accuracy', 'Unknown')}")
+                st.write(f"**Epochs:** {model_info.get('epochs', 'Unknown')}")
+
+            if st.button("🔄 Load Trained Model"):
+                st.session_state.selected_model_path = selected_path
+                st.success(f"✅ Loaded: {model_info['name']}")
+                st.rerun()
+    else:
+        st.info("No trained models found")
+
+    st.write("---")
+
+    # Pretrained models section
+    st.write("**⚡ Pretrained Models (General Purpose)**")
+
+    pretrained_options = ["None"] + [
+        f"{m['name']} - {m['description']}" for m in pretrained_models
+    ]
+    pretrained_paths = [None] + [m["path"] for m in pretrained_models]
+
+    selected_pretrained_idx = 0
+    if hasattr(st.session_state, "selected_model_path"):
+        current_path = st.session_state.selected_model_path
+        if current_path in pretrained_paths:
+            selected_pretrained_idx = pretrained_paths.index(current_path)
+
+    selected_pretrained = st.selectbox(
+        "Choose pretrained model:",
+        options=pretrained_options,
+        index=selected_pretrained_idx,
+        key="pretrained_model_selector",
+    )
+
+    if selected_pretrained != "None":
+        selected_path = pretrained_paths[pretrained_options.index(selected_pretrained)]
+
+        # Show model details
+        model_info = next(m for m in pretrained_models if m["path"] == selected_path)
+        st.info(f"ℹ️ {model_info['description']}")
+        st.warning("⚠️ Pretrained models may not be optimized for defect detection")
+
+        if st.button("🔄 Load Pretrained Model"):
+            st.session_state.selected_model_path = selected_path
+            st.success(f"✅ Loaded: {model_info['name']}")
+            st.rerun()
+
+    # Model upload section
+    st.write("---")
+    st.write("**📤 Upload Custom Model**")
+
+    uploaded_model = st.file_uploader(
+        "Upload YOLO model (.pt file)",
+        type=["pt"],
+        key="model_upload",
+        help="Upload a custom trained YOLO model file",
+    )
+
+    if uploaded_model is not None:
+        try:
+            # Save uploaded model
+            model_dir = "uploaded_models"
+            os.makedirs(model_dir, exist_ok=True)
+
+            model_path = os.path.join(model_dir, uploaded_model.name)
+
+            with open(model_path, "wb") as f:
+                f.write(uploaded_model.read())
+
+            # Validate model
+            if validate_yolo_model(model_path):
+                st.session_state.selected_model_path = model_path
+                st.success(f"✅ Uploaded and loaded: {uploaded_model.name}")
+
+                # Show model info
+                model_size_mb = os.path.getsize(model_path) / (1024 * 1024)
+                st.info(f"📦 Size: {model_size_mb:.1f} MB")
+
+                st.rerun()
+            else:
+                st.error("Invalid YOLO model file")
+                os.remove(model_path)
+
+        except Exception as e:
+            st.error(f"Error uploading model: {str(e)}")
+
+    # Clear model option
+    if st.button("🗑️ Clear Selected Model"):
+        if hasattr(st.session_state, "selected_model_path"):
+            del st.session_state.selected_model_path
+        st.success("Model selection cleared")
+        st.rerun()
+
+
+def get_available_yolo_models():
+    """Get all available YOLO models categorized by type."""
+    models = {"trained": [], "pretrained": []}
+
+    # Search for trained models
+    trained_search_patterns = [
+        "trained_models/*/weights/best.pt",
+        "trained_models/*/weights/last.pt",
+        "trained_models/*.pt",
+        "models/*/best.pt",
+        "models/*/last.pt",
+        "weights/*.pt",
+        "best.pt",
+        "last.pt",
+    ]
+
+    found_trained = set()  # Avoid duplicates
+
+    for pattern in trained_search_patterns:
+        for model_path in glob.glob(pattern):
+            if os.path.isfile(model_path) and model_path not in found_trained:
+                try:
+                    # Extract model information
+                    model_name = extract_model_name(model_path)
+                    model_size_mb = os.path.getsize(model_path) / (1024 * 1024)
+                    modified_time = os.path.getmtime(model_path)
+
+                    # Fix the datetime usage here
+                    date_str = datetime.fromtimestamp(modified_time).strftime(
+                        "%Y-%m-%d %H:%M"
+                    )
+
+                    # Determine model type from path/name
+                    model_type = "Custom"
+                    if "enhanced" in model_path.lower():
+                        model_type = "Enhanced YOLO"
+                    elif "defect" in model_path.lower():
+                        model_type = "Defect Detection"
+                    elif "best" in model_path.lower():
+                        model_type = "Best Checkpoint"
+                    elif "last" in model_path.lower():
+                        model_type = "Latest Checkpoint"
+
+                    # Try to extract training info if available
+                    accuracy, epochs = extract_training_info(model_path)
+
+                    models["trained"].append(
+                        {
+                            "name": model_name,
+                            "path": model_path,
+                            "size_mb": model_size_mb,
+                            "modified": modified_time,
+                            "date_str": date_str,
+                            "model_type": model_type,
+                            "accuracy": accuracy,
+                            "epochs": epochs,
+                        }
+                    )
+
+                    found_trained.add(model_path)
+
+                except Exception as e:
+                    logger.warning(f"Error processing model {model_path}: {e}")
+                    continue
+
+    # Sort trained models by modification time (newest first)
+    models["trained"].sort(key=lambda x: x["modified"], reverse=True)
+
+    # Define pretrained models
+    pretrained_models_config = [
+        {
+            "name": "YOLOv8n",
+            "path": "yolov8n.pt",
+            "description": "Nano - Fastest, lowest accuracy",
+        },
+        {
+            "name": "YOLOv8s",
+            "path": "yolov8s.pt",
+            "description": "Small - Good balance of speed and accuracy",
+        },
+        {
+            "name": "YOLOv8m",
+            "path": "yolov8m.pt",
+            "description": "Medium - Higher accuracy, slower",
+        },
+        {
+            "name": "YOLOv8l",
+            "path": "yolov8l.pt",
+            "description": "Large - High accuracy, slower",
+        },
+        {
+            "name": "YOLOv8x",
+            "path": "yolov8x.pt",
+            "description": "Extra Large - Highest accuracy, slowest",
+        },
+        {
+            "name": "YOLO11s",
+            "path": "yolo11s.pt",
+            "description": "YOLO11 Small - Latest version",
+        },
+        {
+            "name": "YOLO11m",
+            "path": "yolo11m.pt",
+            "description": "YOLO11 Medium - Latest version",
+        },
+    ]
+
+    models["pretrained"] = pretrained_models_config
+
+    return models
+
+
+def extract_model_name(model_path):
+    """Extract a readable model name from the file path."""
+    # Get directory and filename info
+    dir_name = os.path.basename(os.path.dirname(model_path))
+    file_name = os.path.basename(model_path)
+
+    # Create meaningful name
+    if dir_name and dir_name not in ["weights", "models", "."]:
+        # Use directory name if meaningful
+        model_name = dir_name.replace("_", " ").title()
+        if file_name != "best.pt":
+            model_name += f" ({file_name})"
+    else:
+        # Use filename
+        model_name = file_name.replace(".pt", "").replace("_", " ").title()
+
+    return model_name
+
+
+def extract_training_info(model_path):
+    """Try to extract training information from model file or associated files."""
+    accuracy = "Unknown"
+    epochs = "Unknown"
+
+    try:
+        # Look for results.csv or results.txt in parent directory
+        model_dir = os.path.dirname(model_path)
+        parent_dir = os.path.dirname(model_dir)
+
+        # Check for results files
+        for results_file in ["results.csv", "results.txt"]:
+            results_path = os.path.join(parent_dir, results_file)
+            if os.path.exists(results_path):
+                try:
+                    # Try to read training results
+                    with open(results_path, "r") as f:
+                        lines = f.readlines()
+                        if lines:
+                            # Parse last line for final metrics
+                            last_line = lines[-1].strip()
+                            if "," in last_line:
+                                parts = last_line.split(",")
+                                if len(parts) > 1:
+                                    epochs = parts[0].strip()
+                                if len(parts) > 6:  # Typical CSV format
+                                    accuracy = f"{float(parts[6].strip()):.3f}"
+                    break
+                except Exception as parse_error:
+                    logger.debug(
+                        f"Could not parse results file {results_path}: {parse_error}"
+                    )
+                    continue
+
+        # Try to load model metadata if available
+        try:
+            import torch
+
+            if os.path.exists(model_path):
+                checkpoint = torch.load(model_path, map_location="cpu")
+                if isinstance(checkpoint, dict):
+                    if "epoch" in checkpoint:
+                        epochs = str(checkpoint["epoch"])
+                    if "best_fitness" in checkpoint:
+                        accuracy = f"{checkpoint['best_fitness']:.3f}"
+        except Exception as torch_error:
+            logger.debug(
+                f"Could not load model metadata for {model_path}: {torch_error}"
+            )
+            pass
+
+    except Exception as e:
+        logger.debug(f"Could not extract training info for {model_path}: {e}")
+
+    return accuracy, epochs
+
+
+def validate_yolo_model(model_path):
+    """Validate that the uploaded file is a valid YOLO model."""
+    try:
+        # Check file extension
+        if not model_path.endswith(".pt"):
+            return False
+
+        # Check file size (should be reasonable for a model)
+        file_size = os.path.getsize(model_path)
+        if file_size < 1024 * 1024:  # Less than 1MB is suspicious
+            return False
+
+        if file_size > 500 * 1024 * 1024:  # More than 500MB is too large
+            return False
+
+        # Try to load with torch (basic validation)
+        import torch
+
+        try:
+            checkpoint = torch.load(model_path, map_location="cpu")
+            # Basic checks for YOLO model structure
+            if isinstance(checkpoint, dict):
+                return True
+            return False
+        except:
+            return False
+
+    except Exception as e:
+        logger.error(f"Model validation error: {e}")
+        return False
+
+
+def get_selected_model_path(model_type):
+    """Get the currently selected model path."""
+    if model_type == "defect_yolo":
+        if hasattr(st.session_state, "selected_model_path"):
+            return st.session_state.selected_model_path
+        else:
+            # Return default model path
+            return None
+    else:
+        # For non-YOLO models, return None to use default behavior
+        return None
+
+
+@st.cache_resource
+def _get_model_with_path(model_type, model_path=None):
+    """Enhanced model factory function with custom model path support."""
+    MODEL_BASE_PATH = "trained_models"
+
+    # Map of model types to their respective model paths and classes
+    model_configs = {
+        "defect_classification": {
+            "path": "resnet_defect_classifier.keras",
+            "class": DefectDetectionModel,
+            "extra_args": {
+                "class_mapping_path": os.path.join(
+                    MODEL_BASE_PATH, "class_mapping.json"
+                )
+            },
+        },
+        "defect_yolo": {
+            "path": "enhanced_yolo_defect_detector/weights/best.pt",
+            "class": YOLODefectModel,
+            "extra_args": {},
+        },
+    }
+
+    # Check if model type is supported
+    if model_type not in model_configs:
+        raise ValueError(
+            f"Unknown model type: {model_type}. Available: {list(model_configs.keys())}"
+        )
+
+    config = model_configs[model_type]
+
+    # Use custom model path if provided, otherwise use default
+    if model_path and os.path.exists(model_path):
+        final_model_path = model_path
+        st.sidebar.success(f"✅ Using selected model: {os.path.basename(model_path)}")
+    else:
+        # Use default path resolution
+        final_model_path = os.path.join(MODEL_BASE_PATH, config["path"])
+
+        if not os.path.exists(final_model_path):
+            if model_type == "defect_yolo":
+                alt_paths = [
+                    os.path.join(
+                        MODEL_BASE_PATH,
+                        "enhanced_yolo_defect_detector",
+                        "weights",
+                        "best.pt",
+                    ),
+                    os.path.join(
+                        MODEL_BASE_PATH,
+                        "enhanced_yolo_defect_detector",
+                        "weights",
+                        "last.pt",
+                    ),
+                    os.path.join(MODEL_BASE_PATH, "best.pt"),
+                    os.path.join(MODEL_BASE_PATH, "yolo_best.pt"),
+                    "best.pt",
+                    "enhanced_yolo_defect_detector/weights/best.pt",
+                    "yolov8n.pt",  # Fallback to pretrained
+                ]
+
+                for alt_path in alt_paths:
+                    if os.path.exists(alt_path):
+                        final_model_path = alt_path
+                        st.sidebar.info(
+                            f"📍 Using fallback: {os.path.basename(alt_path)}"
+                        )
+                        break
+            else:
+                raise FileNotFoundError(f"Model file not found: {final_model_path}")
+
+    # Initialize the appropriate model class
+    model_class = config["class"]
+    extra_args = config["extra_args"]
+
+    model = model_class(model_path=final_model_path, **extra_args)
+
+    # Load the model
+    if not model.load():
+        raise RuntimeError(f"Failed to load {model_type} model from {final_model_path}")
+
+    return model
+
+
+def image_detection_interface(
+    calibrator,
+    model_type,
+    model_path,
+    conf_threshold,
+    iou_threshold,
+    show_coordinate_system,
+    show_measurements,
+    show_origin_lines,
+):
+    """Image upload detection interface."""
+    st.subheader("Upload Image for Detection")
+
+    # Image upload
+    uploaded_file = st.file_uploader(
+        "Choose an image file",
+        type=["jpg", "jpeg", "png", "bmp"],
+        key="detection_upload",
+    )
+
+    if uploaded_file is not None:
+        try:
+            # Convert uploaded file to image
+            file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+            image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+
+            if image is None:
+                st.error("Failed to load image. Please check the file format.")
+                return
+
+            # Display original image
+            col1, col2 = st.columns([2, 1])
+
+            with col1:
+                st.subheader("Detection Results")
+
+                # Load and run model with custom path
+                try:
+                    model = _get_model_with_path(model_type, model_path)
+
+                    # Run detection
+                    with st.spinner("Running detection..."):
+                        detections = model.predict(
+                            image,
+                            conf_threshold=conf_threshold,
+                            iou_threshold=iou_threshold,
+                        )
+
+                    # Process results with calibration-based coordinates
+                    result_image = process_detection_results(
+                        image,
+                        detections,
+                        calibrator,
+                        show_coordinate_system,
+                        show_measurements,
+                        show_origin_lines,
+                    )
+
+                    # Display result
+                    st.image(
+                        cv2.cvtColor(result_image, cv2.COLOR_BGR2RGB),
+                        use_column_width=True,
+                    )
+
+                except Exception as e:
+                    st.error(f"Detection failed: {str(e)}")
+                    st.image(
+                        cv2.cvtColor(image, cv2.COLOR_BGR2RGB),
+                        caption="Original Image",
+                        use_column_width=True,
+                    )
+
+            with col2:
+                st.subheader("📊 Detection Summary")
+
+                if (
+                    "detections" in locals()
+                    and detections
+                    and detections.get("num_detections", 0) > 0
+                ):
+                    display_detection_measurements(
+                        detections, calibrator, image.shape[:2]
+                    )
+                else:
+                    st.info("No objects detected")
+
+                # Show calibration info
+                st.subheader("📏 Measurement Info")
+                if calibrator.calibration_result:
+                    st.success(f"✅ Calibrated System")
+                    st.write(
+                        f"**Scale:** {calibrator.calibration_result.pixels_per_mm:.2f} pixels/mm"
+                    )
+                    st.write(
+                        f"**Resolution:** {1/calibrator.calibration_result.pixels_per_mm:.4f} mm/pixel"
+                    )
+                else:
+                    st.warning("⚠️ Uncalibrated - showing pixel coordinates")
+                    st.write(
+                        "Go to Camera Calibration to enable real-world measurements"
+                    )
+
+        except Exception as e:
+            st.error(f"Error processing image: {str(e)}")
+
+
+def camera_detection_interface(
+    calibrator,
+    model_type,
+    model_path,
+    conf_threshold,
+    iou_threshold,
+    show_coordinate_system,
+    show_measurements,
+    show_origin_lines,
+):
+    """Camera-based detection interface."""
+    st.subheader("Live Camera Detection")
+
+    # Camera connection controls
+    col1, col2 = st.columns(2)
+
+    with col1:
+        camera_type = st.selectbox(
+            "Camera Type", ["Basler Camera", "Webcam"], key="cam_type"
+        )
+        device_index = st.number_input(
+            "Device Index", min_value=0, max_value=5, value=0, key="cam_index"
+        )
+
+    with col2:
+        if st.button("📷 Connect Camera"):
+            try:
+                if camera_type == "Basler Camera":
+                    camera = BaslerCamera(device_index=device_index)
+                else:
+                    camera = WebcamCamera(camera_id=device_index)
+
+                if camera.connect():
+                    st.session_state.camera = camera
+                    st.success("Camera connected successfully!")
+                else:
+                    st.error("Failed to connect to camera")
+            except Exception as e:
+                st.error(f"Camera connection error: {str(e)}")
+
+        if st.button("🔌 Disconnect Camera"):
+            if hasattr(st.session_state, "camera") and st.session_state.camera:
+                st.session_state.camera.disconnect()
+                del st.session_state.camera
+                st.success("Camera disconnected")
+
+    # Live detection
+    if (
+        hasattr(st.session_state, "camera")
+        and st.session_state.camera
+        and st.session_state.camera.connected
+    ):
+        st.success("📷 Camera Ready")
+
+        col_capture, col_live = st.columns(2)
+
+        with col_capture:
+            if st.button("📸 Capture & Detect"):
+                try:
+                    # Capture image
+                    image = (
+                        st.session_state.camera.capture_corrected_image()
+                    )  # Uses auto-undistort if calibrated
+
+                    if image is not None:
+                        # Store captured image
+                        st.session_state.captured_image = image
+
+                        # Run detection with custom model path
+                        model = _get_model_with_path(model_type, model_path)
+                        detections = model.predict(
+                            image,
+                            conf_threshold=conf_threshold,
+                            iou_threshold=iou_threshold,
+                        )
+
+                        # Process with calibration
+                        result_image = process_detection_results(
+                            image,
+                            detections,
+                            calibrator,
+                            show_coordinate_system,
+                            show_measurements,
+                            show_origin_lines,
+                        )
+
+                        st.session_state.detection_result = result_image
+                        st.session_state.detections = detections
+
+                    else:
+                        st.error("Failed to capture image")
+
+                except Exception as e:
+                    st.error(f"Capture error: {str(e)}")
+
+        # Display results
+        if hasattr(st.session_state, "detection_result"):
+            st.subheader("Latest Detection Result")
+
+            col_result, col_measurements = st.columns([2, 1])
+
+            with col_result:
+                st.image(
+                    cv2.cvtColor(st.session_state.detection_result, cv2.COLOR_BGR2RGB),
+                    use_column_width=True,
+                )
+
+            with col_measurements:
+                st.subheader("📊 Measurements")
+                if (
+                    hasattr(st.session_state, "detections")
+                    and st.session_state.detections
+                ):
+                    display_detection_measurements(
+                        st.session_state.detections,
+                        calibrator,
+                        st.session_state.captured_image.shape[:2],
+                    )
+    else:
+        st.info("Connect a camera to start live detection")
 
 
 def find_latest_calibration_file() -> Optional[str]:
@@ -417,232 +1126,6 @@ def display_calibration_info(calibration_data: dict):
             st.text(f"p2: {dist_coeffs[3]:.6f}")
         if len(dist_coeffs) > 4:
             st.text(f"k3: {dist_coeffs[4]:.6f}")
-
-
-def image_detection_interface(
-    calibrator,
-    model_type,
-    conf_threshold,
-    iou_threshold,
-    show_coordinate_system,
-    show_measurements,
-    show_origin_lines,
-):
-    """Image upload detection interface."""
-    st.subheader("Upload Image for Detection")
-
-    # Image upload
-    uploaded_file = st.file_uploader(
-        "Choose an image file",
-        type=["jpg", "jpeg", "png", "bmp"],
-        key="detection_upload",
-    )
-
-    if uploaded_file is not None:
-        try:
-            # Convert uploaded file to image
-            file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-            image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-
-            if image is None:
-                st.error("Failed to load image. Please check the file format.")
-                return
-
-            # Display original image
-            col1, col2 = st.columns([2, 1])
-
-            with col1:
-                st.subheader("Detection Results")
-
-                # Load and run model
-                try:
-                    model = _get_model(model_type)
-
-                    # Run detection
-                    with st.spinner("Running detection..."):
-                        detections = model.predict(
-                            image,
-                            conf_threshold=conf_threshold,
-                            iou_threshold=iou_threshold,
-                        )
-
-                    # Process results with calibration-based coordinates
-                    result_image = process_detection_results(
-                        image,
-                        detections,
-                        calibrator,
-                        show_coordinate_system,
-                        show_measurements,
-                        show_origin_lines,
-                    )
-
-                    # Display result
-                    st.image(
-                        cv2.cvtColor(result_image, cv2.COLOR_BGR2RGB),
-                        use_column_width=True,
-                    )
-
-                except Exception as e:
-                    st.error(f"Detection failed: {str(e)}")
-                    st.image(
-                        cv2.cvtColor(image, cv2.COLOR_BGR2RGB),
-                        caption="Original Image",
-                        use_column_width=True,
-                    )
-
-            with col2:
-                st.subheader("📊 Detection Summary")
-
-                if (
-                    "detections" in locals()
-                    and detections
-                    and detections.get("num_detections", 0) > 0
-                ):
-                    display_detection_measurements(
-                        detections, calibrator, image.shape[:2]
-                    )
-                else:
-                    st.info("No objects detected")
-
-                # Show calibration info
-                st.subheader("📏 Measurement Info")
-                if calibrator.calibration_result:
-                    st.success(f"✅ Calibrated System")
-                    st.write(
-                        f"**Scale:** {calibrator.calibration_result.pixels_per_mm:.2f} pixels/mm"
-                    )
-                    st.write(
-                        f"**Resolution:** {1/calibrator.calibration_result.pixels_per_mm:.4f} mm/pixel"
-                    )
-                else:
-                    st.warning("⚠️ Uncalibrated - showing pixel coordinates")
-                    st.write(
-                        "Go to Camera Calibration to enable real-world measurements"
-                    )
-
-        except Exception as e:
-            st.error(f"Error processing image: {str(e)}")
-
-
-def camera_detection_interface(
-    calibrator,
-    model_type,
-    conf_threshold,
-    iou_threshold,
-    show_coordinate_system,
-    show_measurements,
-    show_origin_lines,
-):
-    """Camera-based detection interface."""
-    st.subheader("Live Camera Detection")
-
-    # Camera connection controls
-    col1, col2 = st.columns(2)
-
-    with col1:
-        camera_type = st.selectbox(
-            "Camera Type", ["Basler Camera", "Webcam"], key="cam_type"
-        )
-        device_index = st.number_input(
-            "Device Index", min_value=0, max_value=5, value=0, key="cam_index"
-        )
-
-    with col2:
-        if st.button("📷 Connect Camera"):
-            try:
-                if camera_type == "Basler Camera":
-                    camera = BaslerCamera(device_index=device_index)
-                else:
-                    camera = WebcamCamera(camera_id=device_index)
-
-                if camera.connect():
-                    st.session_state.camera = camera
-                    st.success("Camera connected successfully!")
-                else:
-                    st.error("Failed to connect to camera")
-            except Exception as e:
-                st.error(f"Camera connection error: {str(e)}")
-
-        if st.button("🔌 Disconnect Camera"):
-            if hasattr(st.session_state, "camera") and st.session_state.camera:
-                st.session_state.camera.disconnect()
-                del st.session_state.camera
-                st.success("Camera disconnected")
-
-    # Live detection
-    if (
-        hasattr(st.session_state, "camera")
-        and st.session_state.camera
-        and st.session_state.camera.connected
-    ):
-        st.success("📷 Camera Ready")
-
-        col_capture, col_live = st.columns(2)
-
-        with col_capture:
-            if st.button("📸 Capture & Detect"):
-                try:
-                    # Capture image
-                    image = (
-                        st.session_state.camera.capture_corrected_image()
-                    )  # Uses auto-undistort if calibrated
-
-                    if image is not None:
-                        # Store captured image
-                        st.session_state.captured_image = image
-
-                        # Run detection
-                        model = _get_model(model_type)
-                        detections = model.predict(
-                            image,
-                            conf_threshold=conf_threshold,
-                            iou_threshold=iou_threshold,
-                        )
-
-                        # Process with calibration
-                        result_image = process_detection_results(
-                            image,
-                            detections,
-                            calibrator,
-                            show_coordinate_system,
-                            show_measurements,
-                            show_origin_lines,
-                        )
-
-                        st.session_state.detection_result = result_image
-                        st.session_state.detections = detections
-
-                    else:
-                        st.error("Failed to capture image")
-
-                except Exception as e:
-                    st.error(f"Capture error: {str(e)}")
-
-        # Display results
-        if hasattr(st.session_state, "detection_result"):
-            st.subheader("Latest Detection Result")
-
-            col_result, col_measurements = st.columns([2, 1])
-
-            with col_result:
-                st.image(
-                    cv2.cvtColor(st.session_state.detection_result, cv2.COLOR_BGR2RGB),
-                    use_column_width=True,
-                )
-
-            with col_measurements:
-                st.subheader("📊 Measurements")
-                if (
-                    hasattr(st.session_state, "detections")
-                    and st.session_state.detections
-                ):
-                    display_detection_measurements(
-                        st.session_state.detections,
-                        calibrator,
-                        st.session_state.captured_image.shape[:2],
-                    )
-    else:
-        st.info("Connect a camera to start live detection")
 
 
 def process_detection_results(
