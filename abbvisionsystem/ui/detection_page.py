@@ -1,5 +1,7 @@
 """Detection system page with calibration-based coordinate system."""
 
+import json
+from typing import Optional
 import streamlit as st
 import cv2
 import numpy as np
@@ -49,15 +51,11 @@ def _get_model(model_type):
 
     config = model_configs[model_type]
 
-    # Construct full path with multiple fallback options
     model_path = os.path.join(MODEL_BASE_PATH, config["path"])
 
-    # Check if model file exists with enhanced fallback logic
     if not os.path.exists(model_path):
         if model_type == "defect_yolo":
-            # Try multiple possible paths for YOLO model from training pipeline
             alt_paths = [
-                # From training pipeline output
                 os.path.join(
                     MODEL_BASE_PATH,
                     "enhanced_yolo_defect_detector",
@@ -70,39 +68,18 @@ def _get_model(model_type):
                     "weights",
                     "last.pt",
                 ),
-                # Direct path
                 os.path.join(MODEL_BASE_PATH, "best.pt"),
                 os.path.join(MODEL_BASE_PATH, "yolo_best.pt"),
-                # Current directory fallbacks
                 "best.pt",
                 "enhanced_yolo_defect_detector/weights/best.pt",
-                # Pretrained fallback
                 "yolo11s.pt",
             ]
 
-            model_found = False
             for alt_path in alt_paths:
                 if os.path.exists(alt_path):
                     model_path = alt_path
-                    model_found = True
                     st.sidebar.info(f"📍 Using model: {os.path.basename(alt_path)}")
                     break
-
-            if not model_found:
-                # Try to download yolov8n.pt as ultimate fallback
-                try:
-                    from ultralytics import YOLO
-
-                    st.sidebar.warning(
-                        "⚠️ No trained model found, using YOLOv8n pretrained"
-                    )
-                    model_path = "yolo11s.pt"
-                    # This will download yolov8n.pt if it doesn't exist
-                    YOLO(model_path)
-                except Exception as e:
-                    raise FileNotFoundError(
-                        f"YOLO model not found and cannot download fallback. Tried: {alt_paths}"
-                    )
         else:
             raise FileNotFoundError(f"Model file not found: {model_path}")
 
@@ -126,14 +103,17 @@ def detection_system_page():
         "Upload images or connect camera for real-time defect detection with calibrated measurements"
     )
 
-    # Load calibrator instance (shared across app)
     if "main_calibrator" not in st.session_state:
         st.session_state.main_calibrator = CameraCalibrator()
-        # Try to load existing calibration
-        if os.path.exists("calibrations/camera_calibration.json"):
-            st.session_state.main_calibrator.load_calibration(
-                "calibrations/camera_calibration.json"
-            )
+        # Remove hardcoded calibration loading
+        # Auto-load latest calibration if available
+        try:
+            latest_calibration = find_latest_calibration_file()
+            if latest_calibration:
+                st.session_state.main_calibrator.load_calibration(latest_calibration)
+                st.session_state.loaded_calibration_file = latest_calibration
+        except Exception as e:
+            logger.warning(f"Could not auto-load calibration: {e}")
 
     calibrator = st.session_state.main_calibrator
 
@@ -150,26 +130,31 @@ def detection_system_page():
         conf_threshold = st.slider("Confidence Threshold", 0.0, 1.0, 0.25, 0.05)
         iou_threshold = st.slider("IoU Threshold", 0.0, 1.0, 0.45, 0.05)
 
-        # Calibration status
-        st.subheader("📏 Calibration Status")
+        # Calibration management section
+        st.subheader("📏 Calibration Management")
+
+        # Current calibration status
         if calibrator.calibration_result:
             st.success("✅ System Calibrated")
+
+            # Show loaded calibration file info
+            if hasattr(st.session_state, "loaded_calibration_file"):
+                filename = os.path.basename(st.session_state.loaded_calibration_file)
+                st.info(f"📁 Loaded: {filename}")
+
             st.info(f"Scale: {calibrator.calibration_result.pixels_per_mm:.2f} px/mm")
             st.info(f"Error: {calibrator.calibration_result.reprojection_error:.3f}")
 
-            # Option to reload calibration
-            if st.button("🔄 Reload Calibration"):
-                if os.path.exists("calibrations/camera_calibration.json"):
-                    if calibrator.load_calibration(
-                        "calibrations/camera_calibration.json"
-                    ):
-                        st.success("Calibration reloaded!")
-                        st.experimental_rerun()
+            # Show calibration date if available
+            if calibrator.calibration_result.calibration_date:
+                st.info(f"Date: {calibrator.calibration_result.calibration_date}")
+
         else:
             st.warning("⚠️ System Not Calibrated")
-            st.info(
-                "Go to Camera Calibration page to calibrate the system for accurate measurements"
-            )
+            st.info("Upload a calibration file or go to Camera Calibration page")
+
+        # Calibration file upload
+        calibration_upload_section()
 
         # Coordinate system settings
         st.subheader("🎯 Coordinate Display")
@@ -201,6 +186,237 @@ def detection_system_page():
             show_measurements,
             show_origin_lines,
         )
+
+
+def find_latest_calibration_file() -> Optional[str]:
+    """Find the latest calibration file in the calibrations directory."""
+    calibrations_dir = "calibrations"
+
+    if not os.path.exists(calibrations_dir):
+        return None
+
+    calibration_files = []
+    for filename in os.listdir(calibrations_dir):
+        if filename.startswith("calibration_") and filename.endswith(".json"):
+            filepath = os.path.join(calibrations_dir, filename)
+            if os.path.isfile(filepath):
+                # Extract timestamp from filename
+                try:
+                    timestamp_part = filename.replace("calibration_", "").replace(
+                        ".json", ""
+                    )
+                    calibration_files.append((filepath, timestamp_part))
+                except:
+                    continue
+
+    if not calibration_files:
+        return None
+
+    # Sort by timestamp (most recent first)
+    calibration_files.sort(key=lambda x: x[1], reverse=True)
+    return calibration_files[0][0]
+
+
+def calibration_upload_section():
+    """Handle calibration file upload and management."""
+    st.subheader("📤 Upload Calibration")
+
+    # File upload for calibration
+    uploaded_calibration = st.file_uploader(
+        "Choose a calibration file",
+        type=["json"],
+        key="calibration_upload",
+        help="Upload a calibration JSON file (calibration_YYYYMMDD_HHMMSS.json)",
+    )
+
+    if uploaded_calibration is not None:
+        try:
+            # Read and parse the uploaded file
+            calibration_content = uploaded_calibration.read()
+            calibration_data = json.loads(calibration_content.decode("utf-8"))
+
+            # Validate calibration file format
+            if validate_calibration_format(calibration_data):
+                # Create temporary file to load calibration
+                temp_calibration_path = f"temp_calibration_{uploaded_calibration.name}"
+
+                # Save temporary file
+                with open(temp_calibration_path, "w") as f:
+                    json.dump(calibration_data, f, indent=2)
+
+                # Load calibration
+                if st.session_state.main_calibrator.load_calibration(
+                    temp_calibration_path
+                ):
+                    st.success(f"✅ Calibration loaded: {uploaded_calibration.name}")
+                    st.session_state.loaded_calibration_file = uploaded_calibration.name
+
+                    # Display calibration info
+                    display_calibration_info(calibration_data)
+
+                    # Clean up temporary file
+                    if os.path.exists(temp_calibration_path):
+                        os.remove(temp_calibration_path)
+
+                    # Force refresh
+                    st.rerun()
+                else:
+                    st.error("Failed to load calibration file")
+                    if os.path.exists(temp_calibration_path):
+                        os.remove(temp_calibration_path)
+            else:
+                st.error("Invalid calibration file format")
+
+        except json.JSONDecodeError:
+            st.error("Invalid JSON format")
+        except Exception as e:
+            st.error(f"Error loading calibration: {str(e)}")
+
+    # Option to browse available calibration files
+    st.subheader("📂 Available Calibrations")
+
+    calibrations_dir = "calibrations"
+    if os.path.exists(calibrations_dir):
+        available_calibrations = []
+        for filename in os.listdir(calibrations_dir):
+            if filename.startswith("calibration_") and filename.endswith(".json"):
+                filepath = os.path.join(calibrations_dir, filename)
+                if os.path.isfile(filepath):
+                    # Get file modification time
+                    mtime = os.path.getmtime(filepath)
+                    available_calibrations.append((filename, filepath, mtime))
+
+        if available_calibrations:
+            # Sort by modification time (most recent first)
+            available_calibrations.sort(key=lambda x: x[2], reverse=True)
+
+            selected_calibration = st.selectbox(
+                "Select calibration file:",
+                options=["None"] + [f[0] for f in available_calibrations],
+                key="calibration_selector",
+            )
+
+            if selected_calibration != "None":
+                selected_path = next(
+                    f[1] for f in available_calibrations if f[0] == selected_calibration
+                )
+
+                if st.button("🔄 Load Selected Calibration"):
+                    if st.session_state.main_calibrator.load_calibration(selected_path):
+                        st.success(f"✅ Loaded: {selected_calibration}")
+                        st.session_state.loaded_calibration_file = selected_path
+                        st.rerun()
+                    else:
+                        st.error("Failed to load calibration")
+        else:
+            st.info("No calibration files found in calibrations directory")
+    else:
+        st.info("Calibrations directory not found")
+
+    # Clear calibration option
+    if st.button("🗑️ Clear Current Calibration"):
+        st.session_state.main_calibrator.calibration_result = None
+        if hasattr(st.session_state, "loaded_calibration_file"):
+            del st.session_state.loaded_calibration_file
+        st.success("Calibration cleared")
+        st.rerun()
+
+
+def validate_calibration_format(calibration_data: dict) -> bool:
+    """Validate that the uploaded file has the correct calibration format."""
+    required_fields = [
+        "camera_matrix",
+        "distortion_coefficients",
+        "reprojection_error",
+        "image_size",
+    ]
+
+    try:
+        # Check required fields exist
+        for field in required_fields:
+            if field not in calibration_data:
+                logger.error(f"Missing required field: {field}")
+                return False
+
+        # Validate camera matrix format
+        camera_matrix = calibration_data["camera_matrix"]
+        if not isinstance(camera_matrix, list) or len(camera_matrix) != 3:
+            return False
+
+        for row in camera_matrix:
+            if not isinstance(row, list) or len(row) != 3:
+                return False
+
+        # Validate distortion coefficients
+        dist_coeffs = calibration_data["distortion_coefficients"]
+        if not isinstance(dist_coeffs, list) or len(dist_coeffs) == 0:
+            return False
+
+        # Validate numeric fields
+        if not isinstance(calibration_data["reprojection_error"], (int, float)):
+            return False
+
+        # Validate image size
+        image_size = calibration_data["image_size"]
+        if not isinstance(image_size, list) or len(image_size) != 2:
+            return False
+
+        return True
+
+    except Exception as e:
+        logger.error(f"Calibration validation error: {e}")
+        return False
+
+
+def display_calibration_info(calibration_data: dict):
+    """Display information about the loaded calibration."""
+    st.subheader("📊 Calibration Details")
+
+    # Basic info
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.write(
+            f"**Reprojection Error:** {calibration_data['reprojection_error']:.4f}"
+        )
+        st.write(
+            f"**Image Size:** {calibration_data['image_size'][0]} × {calibration_data['image_size'][1]}"
+        )
+
+        if "pixels_per_mm" in calibration_data and calibration_data["pixels_per_mm"]:
+            st.write(f"**Scale:** {calibration_data['pixels_per_mm']:.2f} px/mm")
+            st.write(f"**Resolution:** {1/calibration_data['pixels_per_mm']:.4f} mm/px")
+
+    with col2:
+        if "calibration_date" in calibration_data:
+            st.write(f"**Date:** {calibration_data['calibration_date']}")
+
+        if "chessboard_size" in calibration_data:
+            size = calibration_data["chessboard_size"]
+            st.write(f"**Pattern:** {size[0]} × {size[1]}")
+
+        if "square_size_mm" in calibration_data:
+            st.write(f"**Square Size:** {calibration_data['square_size_mm']} mm")
+
+    # Camera matrix (collapsible)
+    with st.expander("🔍 Camera Matrix"):
+        camera_matrix = np.array(calibration_data["camera_matrix"])
+        st.text(f"fx: {camera_matrix[0,0]:.2f}")
+        st.text(f"fy: {camera_matrix[1,1]:.2f}")
+        st.text(f"cx: {camera_matrix[0,2]:.2f}")
+        st.text(f"cy: {camera_matrix[1,2]:.2f}")
+
+    # Distortion coefficients (collapsible)
+    with st.expander("📐 Distortion Coefficients"):
+        dist_coeffs = calibration_data["distortion_coefficients"][0]
+        st.text(f"k1: {dist_coeffs[0]:.6f}")
+        st.text(f"k2: {dist_coeffs[1]:.6f}")
+        if len(dist_coeffs) > 2:
+            st.text(f"p1: {dist_coeffs[2]:.6f}")
+        if len(dist_coeffs) > 3:
+            st.text(f"p2: {dist_coeffs[3]:.6f}")
+        if len(dist_coeffs) > 4:
+            st.text(f"k3: {dist_coeffs[4]:.6f}")
 
 
 def image_detection_interface(

@@ -701,13 +701,24 @@ class CameraCalibrator:
             calibration_data = {
                 "camera_matrix": self.calibration_result.camera_matrix.tolist(),
                 "distortion_coefficients": self.calibration_result.distortion_coefficients.tolist(),
-                "reprojection_error": self.calibration_result.reprojection_error,
-                "image_size": self.calibration_result.image_size,
-                "pixels_per_mm": self.calibration_result.pixels_per_mm,
-                "calibration_date": self.calibration_result.calibration_date,
-                "chessboard_size": self.chessboard_size,
-                "square_size_mm": self.square_size_mm,
+                "reprojection_error": float(self.calibration_result.reprojection_error),
+                "image_size": list(self.calibration_result.image_size),
+                "pixels_per_mm": (
+                    float(self.calibration_result.pixels_per_mm)
+                    if self.calibration_result.pixels_per_mm is not None
+                    else None
+                ),
+                "calibration_date": (
+                    str(self.calibration_result.calibration_date)
+                    if self.calibration_result.calibration_date is not None
+                    else None
+                ),
+                "chessboard_size": list(self.chessboard_size),
+                "square_size_mm": float(self.square_size_mm),
             }
+
+            # Ensure directory exists
+            os.makedirs(os.path.dirname(filepath), exist_ok=True)
 
             with open(filepath, "w") as f:
                 json.dump(calibration_data, f, indent=2)
