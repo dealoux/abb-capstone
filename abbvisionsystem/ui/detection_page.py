@@ -1,6 +1,5 @@
 """Detection system page with calibration-based coordinate system."""
 
-import datetime
 import glob
 import json
 from typing import Optional
@@ -8,7 +7,7 @@ import streamlit as st
 import cv2
 import numpy as np
 import os
-from datetime import datetime  # Add this import
+from datetime import datetime
 from abbvisionsystem.camera.camera import BaslerCamera, WebcamCamera
 from abbvisionsystem.models.defect_detection_model import DefectDetectionModel
 from abbvisionsystem.models.yolo_model import YOLODefectModel
@@ -21,82 +20,6 @@ from abbvisionsystem.camera.calibration import CameraCalibrator
 import logging
 
 logger = logging.getLogger(__name__)
-
-
-@st.cache_resource
-def _get_model(model_type):
-    """Local model factory function to avoid circular imports"""
-    MODEL_BASE_PATH = "trained_models"
-
-    # Map of model types to their respective model paths and classes
-    model_configs = {
-        "defect_classification": {
-            "path": "resnet_defect_classifier.keras",
-            "class": DefectDetectionModel,
-            "extra_args": {
-                "class_mapping_path": os.path.join(
-                    MODEL_BASE_PATH, "class_mapping.json"
-                )
-            },
-        },
-        "defect_yolo": {
-            "path": "enhanced_yolo_defect_detector/weights/best.pt",
-            "class": YOLODefectModel,
-            "extra_args": {},
-        },
-    }
-
-    # Check if model type is supported
-    if model_type not in model_configs:
-        raise ValueError(
-            f"Unknown model type: {model_type}. Available: {list(model_configs.keys())}"
-        )
-
-    config = model_configs[model_type]
-
-    model_path = os.path.join(MODEL_BASE_PATH, config["path"])
-
-    if not os.path.exists(model_path):
-        if model_type == "defect_yolo":
-            alt_paths = [
-                os.path.join(
-                    MODEL_BASE_PATH,
-                    "enhanced_yolo_defect_detector",
-                    "weights",
-                    "best.pt",
-                ),
-                os.path.join(
-                    MODEL_BASE_PATH,
-                    "enhanced_yolo_defect_detector",
-                    "weights",
-                    "last.pt",
-                ),
-                os.path.join(MODEL_BASE_PATH, "best.pt"),
-                os.path.join(MODEL_BASE_PATH, "yolo_best.pt"),
-                "best.pt",
-                "enhanced_yolo_defect_detector/weights/best.pt",
-                "yolo11s.pt",
-            ]
-
-            for alt_path in alt_paths:
-                if os.path.exists(alt_path):
-                    model_path = alt_path
-                    st.sidebar.info(f"📍 Using model: {os.path.basename(alt_path)}")
-                    break
-        else:
-            raise FileNotFoundError(f"Model file not found: {model_path}")
-
-    # Initialize the appropriate model class
-    model_class = config["class"]
-    extra_args = config["extra_args"]
-
-    model = model_class(model_path=model_path, **extra_args)
-
-    # Load the model
-    if not model.load():
-        raise RuntimeError(f"Failed to load {model_type} model from {model_path}")
-
-    return model
 
 
 def detection_system_page():
