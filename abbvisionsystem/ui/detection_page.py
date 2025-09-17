@@ -1,5 +1,6 @@
 """Detection system page with simplified model management."""
 
+import os
 from typing import Optional
 import streamlit as st
 import cv2
@@ -9,6 +10,12 @@ from abbvisionsystem.models.model_factory import ModelFactory
 from abbvisionsystem.camera.calibration import CameraCalibrator
 from abbvisionsystem.ui.components.model_selector import ModelSelector
 from abbvisionsystem.ui.components.calibration_manager import CalibrationManager
+from abbvisionsystem.ui.components.coordinate_pickmaster_twin import (
+    ABBPickMasterExporter,
+    export_detections_for_abb,
+)
+import tempfile
+import zipfile
 import logging
 
 logger = logging.getLogger(__name__)
@@ -741,6 +748,12 @@ def display_detection_measurements(detections, calibrator, image_shape):
                 obj_height = height
                 distance = np.sqrt(rel_x_px**2 + rel_y_px**2)
 
+            # Calculate orientation
+            theta = np.arctan2(height, width) * 180 / np.pi
+            if theta < 0:
+                theta += 180
+            theta = theta % 180
+
             # Get class info
             class_id = detections["classes"][i] if "classes" in detections else 0
             confidence = detections["scores"][i] if "scores" in detections else 0
@@ -749,6 +762,7 @@ def display_detection_measurements(detections, calibrator, image_shape):
             st.write(f"**Object {i+1}:**")
             st.write(f"- Position: ({rel_x:.1f}, {rel_y:.1f}) {unit}")
             st.write(f"- Dimensions: {obj_width:.1f} × {obj_height:.1f} {unit}")
+            st.write(f"- Orientation: {theta:.1f}°")
             st.write(f"- Distance from origin: {distance:.1f} {unit}")
             st.write(f"- Confidence: {confidence:.2f}")
 
@@ -764,6 +778,60 @@ def display_detection_measurements(detections, calibrator, image_shape):
 
         except Exception as e:
             st.error(f"Error displaying object {i+1}: {str(e)}")
+
+    st.subheader("🤖 ABB Export")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        if st.button("📤 Export for ABB PickMaster"):
+            try:
+                exported_path = export_detections_for_abb(
+                    detections, calibrator, image_shape, origin_point
+                )
+
+                if exported_path:
+                    st.success(f"✅ Exported: {os.path.basename(exported_path)}")
+
+                    # Read the file for download
+                    with open(exported_path, "r", encoding="utf-8") as f:
+                        xml_content = f.read()
+
+                    st.download_button(
+                        label="⬇️ Download XML",
+                        data=xml_content,
+                        file_name=os.path.basename(exported_path),
+                        mime="application/xml",
+                    )
+                else:
+                    st.error("Failed to export XML file")
+
+            except Exception as e:
+                st.error(f"Export error: {str(e)}")
+
+    with col2:
+        # Show export preview
+        if st.checkbox("🔍 Preview XML"):
+            try:
+                exporter = ABBPickMasterExporter(calibrator)
+
+                # Create temporary XML for preview
+                with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".xml", delete=False
+                ) as tmp_file:
+                    if exporter.export_detections_to_xml(
+                        detections, image_shape, tmp_file.name, origin_point
+                    ):
+                        with open(tmp_file.name, "r") as f:
+                            xml_preview = f.read()
+
+                        with st.expander("XML Preview"):
+                            st.code(xml_preview, language="xml")
+
+                        os.unlink(tmp_file.name)
+
+            except Exception as e:
+                st.error(f"Preview error: {str(e)}")
 
 
 if __name__ == "__main__":
