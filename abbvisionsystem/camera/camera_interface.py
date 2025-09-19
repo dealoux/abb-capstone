@@ -16,10 +16,15 @@ def camera_calibration_interface():
         "Calibrate your Basler camera for accurate measurements and defect detection"
     )
 
-    # Initialize calibrator in session state
+    # Initialize camera with persistent session state
+    if "camera" not in st.session_state:
+        st.session_state.camera = None
+
+    # Initialize calibrator with persistent session state
     if "calibrator" not in st.session_state:
         st.session_state.calibrator = CameraCalibrator()
 
+    # Use the session state calibrator
     calibrator = st.session_state.calibrator
 
     # Sidebar for calibration settings
@@ -40,6 +45,10 @@ def camera_calibration_interface():
 
         if st.button("Update Pattern Settings"):
             calibrator.set_chessboard_pattern(rows, cols, square_size)
+            # Sync with camera if connected
+            if st.session_state.camera and st.session_state.camera.connected:
+                st.session_state.camera.calibrator = calibrator
+                st.session_state.camera.set_calibration_pattern(rows, cols, square_size)
             st.success("Pattern settings updated")
 
         # Display current settings
@@ -57,9 +66,6 @@ def camera_calibration_interface():
 
         # Camera connection
         st.subheader("Camera Connection")
-        if "camera" not in st.session_state:
-            st.session_state.camera = None
-
         camera_index = st.number_input(
             "Camera Index", min_value=0, max_value=5, value=0
         )
@@ -67,8 +73,14 @@ def camera_calibration_interface():
         if st.button("Connect Camera"):
             camera = BaslerCamera(device_index=camera_index)
             if camera.connect():
+                # Set the camera's calibrator to the session state calibrator
+                camera.calibrator = st.session_state.calibrator
+                # Sync calibration settings
+                camera.set_calibration_pattern(rows, cols, square_size)
+                
                 st.session_state.camera = camera
                 st.success("Camera connected successfully")
+                st.info("✅ Camera synchronized with calibration data")
             else:
                 st.error("Failed to connect to camera")
 
@@ -164,39 +176,32 @@ def camera_calibration_interface():
                 else:
                     st.info("Click 'Visualize Pattern' to see enhanced visualization")
 
-        # Add calibration image
+        # Add calibration image with proper syncing
         if st.button("✅ Add Calibration Image"):
             if hasattr(st.session_state, "preview_image"):
-                success = calibrator.add_calibration_image(
-                    st.session_state.preview_image
-                )
+                # Add to the session state calibrator
+                success = calibrator.add_calibration_image(st.session_state.preview_image)
+                
                 if success:
+                    # Sync the calibrator with the camera
+                    if st.session_state.camera and st.session_state.camera.connected:
+                        st.session_state.camera.calibrator = calibrator
+                        # Get origin from calibrator and sync with camera
+                        if calibrator.origin_point:
+                            st.session_state.camera.origin_point = calibrator.origin_point
+                            # Store in session state for persistence
+                            st.session_state.origin_point = calibrator.origin_point
+                            st.session_state.calibration_data = {
+                                'origin_point': calibrator.origin_point,
+                                'calibrator': calibrator,
+                                'has_calibration': True
+                            }
+                    
                     st.success(f"Added image {len(calibrator.calibration_images)}")
-
-                    # Show the added image with visualization
-                    st.subheader("Added Image Visualization")
-                    added_vis = calibrator.draw_chessboard_pattern(
-                        st.session_state.preview_image, draw_axes=True, draw_cube=False
-                    )
-                    st.image(
-                        cv2.cvtColor(added_vis, cv2.COLOR_BGR2RGB),
-                        caption=f"Calibration Image {len(calibrator.calibration_images)} - Successfully Added",
-                        use_container_width=True,
-                    )
+                    if calibrator.origin_point:
+                        st.info(f"🎯 Origin detected at: {calibrator.origin_point}")
                 else:
                     st.error("Could not detect chessboard in image")
-
-                    # Show failed detection visualization
-                    failed_vis = calibrator.draw_chessboard_pattern(
-                        st.session_state.preview_image, draw_axes=False, draw_cube=False
-                    )
-                    st.image(
-                        cv2.cvtColor(failed_vis, cv2.COLOR_BGR2RGB),
-                        caption="Failed Detection - Check pattern settings and image quality",
-                        use_container_width=True,
-                    )
-            else:
-                st.warning("Capture a preview image first")
 
         # Manual image upload with visualization
         st.subheader("Manual Image Upload")
@@ -214,6 +219,29 @@ def camera_calibration_interface():
 
                 success = calibrator.add_calibration_image(image)
 
+                # CRITICAL: Sync after each successful addition - including origin
+                if success:
+                    # Sync the calibrator with the camera
+                    if st.session_state.camera and st.session_state.camera.connected:
+                        st.session_state.camera.calibrator = calibrator
+                        
+                    # Get and sync origin from calibrator after each successful image
+                    if calibrator.origin_point:
+                        # Sync with camera
+                        if st.session_state.camera and st.session_state.camera.connected:
+                            st.session_state.camera.origin_point = calibrator.origin_point
+                        
+                        # Store in session state for persistence
+                        st.session_state.origin_point = calibrator.origin_point
+                        st.session_state.calibration_data = {
+                            'origin_point': calibrator.origin_point,
+                            'calibrator': calibrator,
+                            'has_calibration': True
+                        }
+                        
+                        # Show origin info for each uploaded image
+                        st.success(f"🎯 Origin detected from uploaded image: {calibrator.origin_point}")
+
                 # Create visualization for each uploaded image
                 upload_vis = calibrator.draw_chessboard_pattern(
                     image, draw_axes=show_axes, draw_cube=show_cube
@@ -223,7 +251,6 @@ def camera_calibration_interface():
                 status_text = (
                     "✅ Successfully Added" if success else "❌ Detection Failed"
                 )
-                status_color = "green" if success else "red"
 
                 with st.expander(f"{uploaded_file.name} - {status_text}"):
                     col_orig, col_vis = st.columns(2)
@@ -241,43 +268,76 @@ def camera_calibration_interface():
                             caption=f"Pattern Detection - {status_text}",
                             use_container_width=True,
                         )
+                    
+                    # Show origin info for this specific image
+                    if success and calibrator.origin_point:
+                        st.info(f"🎯 Origin point from this image: {calibrator.origin_point}")
+                        st.info(f"Total calibration images: {len(calibrator.calibration_images)}")
 
-        # Current status
-        st.subheader("Calibration Status")
+            # After processing all uploaded files, show final origin status
+            if calibrator.origin_point:
+                st.success(f"🎯 **Final Origin Point**: {calibrator.origin_point}")
+                st.info("This origin will be used for coordinate conversion in detection")
+            
+            # Update session state with final calibration data
+            if len(calibrator.calibration_images) > 0:
+                st.session_state.calibration_data = {
+                    'origin_point': calibrator.origin_point,
+                    'calibrator': calibrator,
+                    'has_calibration': bool(calibrator.origin_point),
+                    'num_images': len(calibrator.calibration_images)
+                }
+                
+                # Sync with camera if connected
+                if st.session_state.camera and st.session_state.camera.connected:
+                    st.session_state.camera.calibrator = calibrator
+                    if calibrator.origin_point:
+                        st.session_state.camera.origin_point = calibrator.origin_point
+
+        # Current calibration status display
+        st.subheader("📊 Current Calibration Status")
         num_images = len(calibrator.calibration_images)
-        st.metric("Calibration Images", num_images)
+        
+        col_status1, col_status2, col_status3 = st.columns(3)
+        
+        with col_status1:
+            st.metric("Calibration Images", num_images)
+        
+        with col_status2:
+            origin_status = "Set" if calibrator.origin_point else "Not Set"
+            st.metric("Origin Point", origin_status)
+            
+        with col_status3:
+            # Fix: Get calibration data from session state properly
+            session_calib_data = st.session_state.get('calibration_data', {})
+            calib_result = session_calib_data.get('calibration_result')
+            if calib_result and hasattr(calib_result, 'reprojection_error'):
+                st.metric("Calibration Quality", f"{calib_result.reprojection_error:.4f}")
+            elif calibrator.calibration_result:
+                st.metric("Calibration Quality", f"{calibrator.calibration_result.reprojection_error:.4f}")
+            else:
+                st.metric("Calibration Quality", "Not Available")
 
-        if num_images < 5:
-            st.warning("Need at least 5 images for calibration")
+        # Show origin coordinates if available
+        if calibrator.origin_point:
+            st.success(f"🎯 **Current Origin**: {calibrator.origin_point}")
+            st.info("Origin is taken from the first corner of the first successfully detected chessboard")
         else:
-            st.success("Ready for calibration!")
+            st.warning("⚠️ No origin point detected yet")
+            st.info("Upload images with detectable chessboard patterns to set the origin")
 
-        # Show collected images gallery
-        if num_images > 0:
-            with st.expander(f"View Collected Images ({num_images})"):
-                cols_per_row = 3
-                for i in range(0, num_images, cols_per_row):
-                    cols = st.columns(cols_per_row)
-                    for j in range(cols_per_row):
-                        if i + j < num_images:
-                            with cols[j]:
-                                calib_data = calibrator.calibration_images[i + j]
-                                vis_img = calibrator.draw_chessboard_pattern(
-                                    calib_data["image"],
-                                    draw_axes=False,
-                                    draw_cube=False,
-                                )
-                                st.image(
-                                    cv2.cvtColor(vis_img, cv2.COLOR_BGR2RGB),
-                                    caption=f"Image {i + j + 1}",
-                                    use_container_width=True,
-                                )
+        # Show detailed calibration data if available
+        if 'calibration_data' in st.session_state:
+            calib_data = st.session_state.calibration_data
+            if calib_data.get('has_calibration'):
+                with st.expander("📋 Detailed Calibration Info"):
+                    st.write(f"**Origin Point**: {calib_data.get('origin_point')}")
+                    st.write(f"**Number of Images**: {calib_data.get('num_images', 0)}")
+                    st.write(f"**Calibrator Object**: {'Available' if calib_data.get('calibrator') else 'Missing'}")
+                    if calib_data.get('pixels_per_mm'):
+                        st.write(f"**Scale Factor**: {calib_data['pixels_per_mm']:.2f} px/mm")
 
-        # Clear images
-        if st.button("🗑️ Clear All Images"):
-            calibrator.calibration_images.clear()
-            st.success("Cleared all calibration images")
-
+    # Move to col2 for the calibration section
     with col2:
         st.subheader("Calibration & Results")
 
@@ -289,6 +349,22 @@ def camera_calibration_interface():
 
                 if result:
                     st.success("✅ Calibration successful!")
+
+                    # Sync calibration result with camera and session state
+                    if st.session_state.camera and st.session_state.camera.connected:
+                        st.session_state.camera.calibrator = calibrator
+                        if calibrator.origin_point:
+                            st.session_state.camera.origin_point = calibrator.origin_point
+                    
+                    # Store complete calibration data in session state
+                    st.session_state.calibration_data = {
+                        'origin_point': calibrator.origin_point,
+                        'calibration_result': result,
+                        'pixels_per_mm': result.pixels_per_mm,
+                        'calibrator': calibrator,
+                        'has_calibration': True
+                    }
+                    st.session_state.origin_point = calibrator.origin_point
 
                     # Display calibration results
                     col_a, col_b = st.columns(2)
@@ -331,6 +407,11 @@ k3 = {result.distortion_coefficients[0,4]:.6f}
                     """
                     )
 
+                    # Show origin information prominently
+                    if calibrator.origin_point:
+                        st.success(f"🎯 **Origin Point**: {calibrator.origin_point}")
+                        st.info("This origin will be used in the detection page for coordinate conversion")
+
                     # Visualization of calibration results
                     st.subheader("🎯 Calibration Visualization Results")
 
@@ -355,6 +436,7 @@ k3 = {result.distortion_coefficients[0,4]:.6f}
                         - Reprojection Error: {result.reprojection_error:.4f} pixels
                         - Quality: {'Excellent' if result.reprojection_error < 0.5 else 'Good' if result.reprojection_error < 1.0 else 'Poor - Consider Recalibrating'}
                         - Scale Accuracy: {result.pixels_per_mm:.2f} pixels/mm
+                        - Origin Point: {calibrator.origin_point}
                         """
                         )
 
@@ -363,54 +445,111 @@ k3 = {result.distortion_coefficients[0,4]:.6f}
             else:
                 st.error("Need at least 5 calibration images")
 
-        # Calibration result visualization section
-        if calibrator.calibration_result:
-            st.subheader("🎨 Interactive Calibration Visualization")
-
-            # Visualization controls
-            col_vis1, col_vis2 = st.columns(2)
-
-            with col_vis1:
-                vis_axes = st.checkbox(
-                    "Show Coordinate Axes", value=True, key="result_axes"
-                )
-                vis_cube = st.checkbox("Show 3D Cube", value=True, key="result_cube")
-
-            with col_vis2:
-                if st.button("🔄 Update Visualization"):
-                    if hasattr(st.session_state, "preview_image"):
-                        result_vis = calibrator.draw_chessboard_pattern(
-                            st.session_state.preview_image,
-                            draw_axes=vis_axes,
-                            draw_cube=vis_cube,
-                        )
-
-                        st.image(
-                            cv2.cvtColor(result_vis, cv2.COLOR_BGR2RGB),
-                            caption="Updated Calibration Visualization",
-                            use_container_width=True,
-                        )
+        # Show current calibration status
+        if 'calibration_data' in st.session_state and st.session_state.calibration_data.get('has_calibration'):
+            st.success("✅ **Calibration Data Available for Detection**")
+            calib_data = st.session_state.calibration_data
+            st.info(f"Origin: {calib_data['origin_point']}")
+            if 'pixels_per_mm' in calib_data and calib_data['pixels_per_mm']:
+                st.info(f"Scale: {calib_data['pixels_per_mm']:.2f} px/mm")
 
         # Save/Load calibration
         st.subheader("Save/Load Calibration")
 
-        # Save calibration
+        # Debug calibration state before save/load
+        with st.expander("🔍 Debug: Current Calibration State"):
+            st.write("**Calibrator State:**")
+            st.write(f"- Has calibration result: {calibrator.calibration_result is not None}")
+            st.write(f"- Origin point: {calibrator.origin_point}")
+            st.write(f"- Number of images: {len(calibrator.calibration_images)}")
+            st.write(f"- Pattern size: {calibrator.chessboard_size}")
+            st.write(f"- Square size: {calibrator.square_size_mm}")
+            
+            if calibrator.calibration_result:
+                st.write(f"- Reprojection error: {calibrator.calibration_result.reprojection_error}")
+                st.write(f"- Pixels per mm: {calibrator.calibration_result.pixels_per_mm}")
+                st.write(f"- Image size: {calibrator.calibration_result.image_size}")
+                st.write(f"- Camera matrix shape: {calibrator.calibration_result.camera_matrix.shape}")
+                st.write(f"- Distortion coeffs shape: {calibrator.calibration_result.distortion_coefficients.shape}")
+            
+            st.write("**File System Check:**")
+            st.write(f"- Current working directory: {os.getcwd()}")
+            st.write(f"- Calibrations directory exists: {os.path.exists('calibrations')}")
+            if os.path.exists('calibrations'):
+                existing_files = os.listdir('calibrations')
+                st.write(f"- Existing calibration files: {existing_files}")
+
+        # Save calibration WITH ORIGIN
         if calibrator.calibration_result:
             calibration_name = st.text_input(
                 "Calibration Name",
                 f"calibration_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
             )
 
+            # Update the save button section to show debug info:
+
             if st.button("💾 Save Calibration"):
-                filepath = f"calibrations/{calibration_name}.json"
-                os.makedirs("calibrations", exist_ok=True)
-
-                if calibrator.save_calibration(filepath):
-                    st.success(f"Calibration saved to {filepath}")
+                # Ensure origin point is available
+                if not calibrator.origin_point:
+                    st.error("❌ No origin point available to save!")
+                    st.info("Go back to calibration and ensure origin is detected from checkerboard")
                 else:
-                    st.error("Failed to save calibration")
+                    try:
+                        filepath = f"calibrations/{calibration_name}.json"
+                        
+                        # Create directory if it doesn't exist
+                        os.makedirs("calibrations", exist_ok=True)
+                        
+                        # Debug: Show what we're trying to save
+                        with st.expander("🔍 Debug: Data to Save"):
+                            st.write(f"**Origin Point**: {calibrator.origin_point} (type: {type(calibrator.origin_point)})")
+                            if calibrator.origin_point:
+                                st.write(f"**Origin Elements**: {[type(x) for x in calibrator.origin_point]}")
+                            st.write(f"**Calibration Result**: Available")
+                            st.write(f"**Pattern Size**: {calibrator.chessboard_size}")
+                            st.write(f"**Square Size**: {calibrator.square_size_mm}")
+                            if calibrator.calibration_result:
+                                st.write(f"**Reprojection Error**: {calibrator.calibration_result.reprojection_error}")
+                                st.write(f"**Pixels per MM**: {calibrator.calibration_result.pixels_per_mm}")
+                        
+                        # Attempt to save with enhanced error handling
+                        success = calibrator.save_calibration_with_origin(filepath)
+                        
+                        if success:
+                            st.success(f"✅ Calibration and origin saved to {filepath}")
+                            st.info(f"🎯 Origin point {calibrator.origin_point} saved for future use")
+                            
+                            # Verify the saved file
+                            if os.path.exists(filepath):
+                                file_size = os.path.getsize(filepath)
+                                st.info(f"📁 File saved successfully ({file_size} bytes)")
+                                
+                                # Show a preview of the saved JSON
+                                with st.expander("📄 Saved File Preview"):
+                                    try:
+                                        with open(filepath, 'r') as f:
+                                            content = f.read()
+                                        st.code(content[:500] + "..." if len(content) > 500 else content, language="json")
+                                    except Exception as e:
+                                        st.error(f"Could not read saved file: {e}")
+                        else:
+                            st.error("❌ Failed to save calibration")
+                            st.info("Check the console/logs for detailed error information")
+                            
+                    except Exception as e:
+                        st.error(f"❌ Save failed with error: {str(e)}")
+                        st.info("This might be a file permissions issue or invalid file path")
+                        
+                        # Show detailed error information
+                        with st.expander("🔍 Error Details"):
+                            st.code(f"""
+Error Type: {type(e).__name__}
+Error Message: {str(e)}
+Calibration Name: {calibration_name}
+Attempted File Path: calibrations/{calibration_name}.json
+                            """)
 
-        # Load calibration
+        # Load calibration WITH ORIGIN
         st.subheader("Load Existing Calibration")
 
         # List available calibrations
@@ -426,30 +565,71 @@ k3 = {result.distortion_coefficients[0,4]:.6f}
 
                 if st.button("📂 Load Calibration"):
                     filepath = f"calibrations/{selected_calibration}"
-                    if calibrator.load_calibration(filepath):
-                        st.success(f"Calibration loaded from {filepath}")
+                    if calibrator.load_calibration_with_origin(filepath):
+                        st.success(f"✅ Calibration and origin loaded from {filepath}")
+                        
+                        # Sync loaded data with session state and camera
+                        if calibrator.origin_point:
+                            st.session_state.origin_point = calibrator.origin_point
+                            st.session_state.calibration_data = {
+                                'origin_point': calibrator.origin_point,
+                                'calibration_result': calibrator.calibration_result,
+                                'pixels_per_mm': calibrator.calibration_result.pixels_per_mm if calibrator.calibration_result else None,
+                                'calibrator': calibrator,
+                                'has_calibration': True
+                            }
+                            
+                            # Sync with camera
+                            if st.session_state.camera and st.session_state.camera.connected:
+                                st.session_state.camera.calibrator = calibrator
+                                st.session_state.camera.origin_point = calibrator.origin_point
+                            
+                            st.success(f"🎯 Origin point loaded: {calibrator.origin_point}")
+                        
                         # Display loaded calibration info
                         if calibrator.calibration_result:
-                            st.metric(
-                                "Loaded - Reprojection Error",
-                                f"{calibrator.calibration_result.reprojection_error:.4f}",
-                            )
-                            if calibrator.calibration_result.pixels_per_mm:
+                            col_load1, col_load2 = st.columns(2)
+                            
+                            with col_load1:
                                 st.metric(
-                                    "Loaded - Scale",
-                                    f"{calibrator.calibration_result.pixels_per_mm:.2f} px/mm",
+                                    "Loaded - Reprojection Error",
+                                    f"{calibrator.calibration_result.reprojection_error:.4f}",
                                 )
+                                
+                            with col_load2:
+                                if calibrator.calibration_result.pixels_per_mm:
+                                    st.metric(
+                                        "Loaded - Scale",
+                                        f"{calibrator.calibration_result.pixels_per_mm:.2f} px/mm",
+                                    )
 
-                            # Show visualization of loaded calibration
+                            # Show loaded origin prominently
+                            if calibrator.origin_point:
+                                st.info(f"🎯 **Loaded Origin**: {calibrator.origin_point}")
+                                st.info("This origin can now be used in detection without the checkerboard")
+
+                            # Show visualization of loaded calibration on current image
                             if hasattr(st.session_state, "preview_image"):
-                                loaded_vis = calibrator.draw_chessboard_pattern(
-                                    st.session_state.preview_image,
-                                    draw_axes=True,
-                                    draw_cube=True,
-                                )
+                                # Draw the loaded origin on current image
+                                loaded_vis = st.session_state.preview_image.copy()
+                                ox, oy = calibrator.origin_point
+                                
+                                # Draw origin point and axes from loaded calibration
+                                cv2.circle(loaded_vis, (ox, oy), 8, (0, 255, 255), -1)  # Yellow dot
+                                cv2.arrowedLine(loaded_vis, (ox, oy), (ox + 100, oy), 
+                                               (0, 0, 255), 3, tipLength=0.1)  # Red X-axis
+                                cv2.arrowedLine(loaded_vis, (ox, oy), (ox, oy + 100), 
+                                               (0, 255, 0), 3, tipLength=0.1)  # Green Y-axis
+                                
+                                # Labels
+                                cv2.putText(loaded_vis, "O(0,0)", (ox-30, oy-15), 
+                                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                                cv2.putText(loaded_vis, "Loaded Origin", (ox-50, oy-35), 
+                                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+                                
                                 st.image(
                                     cv2.cvtColor(loaded_vis, cv2.COLOR_BGR2RGB),
-                                    caption="Loaded Calibration Visualization",
+                                    caption="Current Image with Loaded Origin Point",
                                     use_container_width=True,
                                 )
                     else:
@@ -457,49 +637,35 @@ k3 = {result.distortion_coefficients[0,4]:.6f}
             else:
                 st.info("No saved calibrations found")
 
-        # Test undistortion with visualization
-        if calibrator.calibration_result and hasattr(st.session_state, "preview_image"):
-            st.subheader("🔄 Distortion Correction Test")
-
-            if st.button("Test Undistortion"):
-                original = st.session_state.preview_image
-                undistorted = calibrator.undistort_image(original)
-
-                # Create visualizations for both images
-                original_vis = calibrator.draw_chessboard_pattern(
-                    original, draw_axes=True, draw_cube=False
-                )
-                undistorted_vis = calibrator.draw_chessboard_pattern(
-                    undistorted, draw_axes=True, draw_cube=False
-                )
-
-                # Show before/after comparison with pattern visualization
-                tab_orig, tab_undist, tab_overlay = st.tabs(
-                    ["Original", "Undistorted", "Overlay Comparison"]
-                )
-
-                with tab_orig:
-                    st.image(
-                        cv2.cvtColor(original_vis, cv2.COLOR_BGR2RGB),
-                        caption="Original (With Distortion)",
-                        use_container_width=True,
-                    )
-
-                with tab_undist:
-                    st.image(
-                        cv2.cvtColor(undistorted_vis, cv2.COLOR_BGR2RGB),
-                        caption="Corrected (Undistorted)",
-                        use_container_width=True,
-                    )
-
-                with tab_overlay:
-                    # Create side-by-side comparison
-                    comparison = np.hstack([original_vis, undistorted_vis])
-                    st.image(
-                        cv2.cvtColor(comparison, cv2.COLOR_BGR2RGB),
-                        caption="Side-by-Side: Original (Left) vs Undistorted (Right)",
-                        use_container_width=True,
-                    )
+        # Quick Save Current Origin (without full calibration)
+        if calibrator.origin_point and not calibrator.calibration_result:
+            st.subheader("💾 Save Origin Only")
+            st.info("You have detected an origin but haven't run full calibration yet")
+            
+            origin_name = st.text_input(
+                "Origin Name",
+                f"origin_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            )
+            
+            if st.button("💾 Save Origin Point"):
+                filepath = f"calibrations/{origin_name}_origin.json"
+                os.makedirs("calibrations", exist_ok=True)
+                
+                origin_data = {
+                    'origin_point': calibrator.origin_point,
+                    'pattern_size': calibrator.chessboard_size,
+                    'square_size_mm': calibrator.square_size_mm,
+                    'timestamp': datetime.now().isoformat(),
+                    'type': 'origin_only'
+                }
+                
+                try:
+                    import json
+                    with open(filepath, 'w') as f:
+                        json.dump(origin_data, f, indent=2)
+                    st.success(f"🎯 Origin point saved to {filepath}")
+                except Exception as e:
+                    st.error(f"Failed to save origin: {e}")
 
     # Instructions and tips
     with st.expander("📋 Calibration Instructions & Tips"):
@@ -549,9 +715,12 @@ k3 = {result.distortion_coefficients[0,4]:.6f}
 
     # Integration with main camera object
     if calibrator.calibration_result and st.session_state.camera:
-        # Apply calibration to the camera object
+        # Make sure the camera uses the same calibrator instance
         st.session_state.camera.calibrator = calibrator
-        st.info("✅ Calibration applied to camera object")
+        # Sync the origin
+        if hasattr(calibrator, 'origin_point') and calibrator.origin_point:
+            st.session_state.camera.origin_point = calibrator.origin_point
+    st.info("✅ Calibration and origin synchronized with camera object")
 
     # Detection tips specific to current settings
     with st.expander("🔍 Pattern Detection Tips"):
@@ -560,5 +729,234 @@ k3 = {result.distortion_coefficients[0,4]:.6f}
             st.write(f"{i}. {tip}")
 
 
-if __name__ == "__main__":
-    camera_calibration_interface()
+def detection_page():
+    """Detection page that uses the calibrated origin from checkerboard."""
+    st.title("🔍 Object Detection")
+    
+    # Get camera from session state
+    camera = st.session_state.get('camera')
+    
+    # CRITICAL: Get the calibrator from session state (same instance as calibration page)
+    calibrator = st.session_state.get('calibrator')
+    
+    if not calibrator:
+        st.error("❌ No calibrator found! Go to calibration page first.")
+        return
+    
+    if not camera or not camera.connected:
+        st.error("❌ Camera not connected. Connect camera first in calibration page.")
+        st.info("👈 Go to calibration page to connect camera")
+        return
+    
+    # CRITICAL: Use the saved origin from the calibrator
+    saved_origin = calibrator.origin_point
+    
+    # Show calibration status
+    st.subheader("📐 Calibration Status from Calibrator")
+    
+    if saved_origin:
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric("Calibrator Origin", f"({saved_origin[0]}, {saved_origin[1]})")
+        
+        with col2:
+            if calibrator.calibration_result and calibrator.calibration_result.pixels_per_mm:
+                st.metric("Scale", f"{calibrator.calibration_result.pixels_per_mm:.2f} px/mm")
+            else:
+                st.metric("Scale", "Not Available")
+        
+        with col3:
+            if calibrator.calibration_result:
+                st.metric("Calibration Error", f"{calibrator.calibration_result.reprojection_error:.4f}")
+            else:
+                st.metric("Calibration Error", "Not Available")
+        
+        st.success(f"✅ Using saved origin from calibration: {saved_origin}")
+        st.info("🎯 This origin was set during checkerboard calibration and persists without the checkerboard")
+        
+    else:
+        st.error("❌ No saved origin found in calibrator!")
+        st.info("👈 Go to calibration page and calibrate with checkerboard first")
+        return
+    
+    # Show debug info
+    with st.expander("🔍 Calibrator Debug Info"):
+        st.write(f"**Calibrator Origin**: {calibrator.origin_point}")
+        st.write(f"**Number of Calibration Images**: {len(calibrator.calibration_images)}")
+        st.write(f"**Has Calibration Result**: {calibrator.calibration_result is not None}")
+        if camera:
+            st.write(f"**Camera Origin**: {getattr(camera, 'origin_point', 'Not Set')}")
+            st.write(f"**Camera Calibrated Origin**: {camera.get_calibrated_origin()}")
+    
+    # Sidebar with origin info
+    with st.sidebar:
+        st.subheader("🎯 Calibrated Coordinate System")
+        ox, oy = saved_origin
+        st.write(f"**Origin**: ({ox}, {oy})")
+        st.write("*(From checkerboard calibration)*")
+        
+        if calibrator.calibration_result and calibrator.calibration_result.pixels_per_mm:
+            st.write(f"**Scale**: {calibrator.calibration_result.pixels_per_mm:.2f} px/mm")
+        
+        st.divider()
+        
+        # Manual adjustment if needed
+        if st.checkbox("🛠️ Adjust Origin"):
+            st.warning("⚠️ Only use if needed!")
+            manual_ox = st.number_input("Origin X", value=ox, step=1)
+            manual_oy = st.number_input("Origin Y", value=oy, step=1)
+            
+            if st.button("Update Origin"):
+                new_origin = (int(manual_ox), int(manual_oy))
+                calibrator.origin_point = new_origin
+                if camera:
+                    camera.origin_point = new_origin
+                st.success(f"Origin updated to {new_origin}")
+                st.rerun()
+    
+    # Main detection interface
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.subheader("📸 Detection with Calibrated Origin")
+        st.info(f"Using saved origin ({ox}, {oy}) from calibration")
+        
+        if st.button("📸 Capture & Detect", type="primary"):
+            # Capture image using camera
+            image = camera.capture_image()
+            
+            if image is not None:
+                st.success("✅ Image captured successfully")
+                
+                # Draw coordinate system using SAVED origin (not camera method)
+                result_image = image.copy()
+                
+                # Use the SAVED origin from calibrator
+                cox, coy = saved_origin
+                
+                st.info(f"🎯 Drawing coordinate system at saved origin: ({cox}, {coy})")
+                
+                # Draw origin point - exactly like in calibration
+                cv2.circle(result_image, (cox, coy), 12, (0, 255, 255), -1)  # Yellow filled circle
+                cv2.circle(result_image, (cox, coy), 12, (0, 0, 0), 2)        # Black border
+                
+                # Draw coordinate axes - exactly like in calibration
+                axis_length = 100
+                cv2.arrowedLine(result_image, (cox, coy), (cox + axis_length, coy), 
+                               (0, 0, 255), 3, tipLength=0.1)  # Red X-axis
+                cv2.arrowedLine(result_image, (cox, coy), (cox, coy + axis_length), 
+                               (0, 255, 0), 3, tipLength=0.1)  # Green Y-axis
+                
+                # Labels - exactly like in calibration
+                cv2.putText(result_image, "ORIGIN", (cox-30, coy-25), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                cv2.putText(result_image, "(0,0)", (cox-20, coy+35), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                cv2.putText(result_image, "X", (cox + axis_length + 10, coy + 5), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                cv2.putText(result_image, "Y", (cox - 15, coy + axis_length + 20), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                
+                # Add info overlay
+                cv2.putText(result_image, f"Saved Origin: ({cox}, {coy})", 
+                           (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                
+                if calibrator.calibration_result and calibrator.calibration_result.pixels_per_mm:
+                    cv2.putText(result_image, f"Scale: {calibrator.calibration_result.pixels_per_mm:.2f} px/mm", 
+                               (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                
+                st.image(cv2.cvtColor(result_image, cv2.COLOR_BGR2RGB), 
+                        caption=f"Detection Image with Saved Origin ({cox}, {coy})")
+                
+                # Show coordinate examples using saved origin
+                st.subheader("📐 Coordinate Examples")
+                
+                # Example points relative to saved origin
+                example_points = [
+                    (cox + 100, coy + 50, "Point A"),
+                    (cox - 50, coy + 100, "Point B"), 
+                    (cox + 75, coy - 25, "Point C")
+                ]
+                
+                for px, py, label in example_points:
+                    if 0 <= px < image.shape[1] and 0 <= py < image.shape[0]:
+                        # Calculate relative to saved origin
+                        rel_x_pixels = px - cox
+                        rel_y_pixels = py - coy
+                        
+                        if calibrator.calibration_result and calibrator.calibration_result.pixels_per_mm:
+                            x_mm = rel_x_pixels / calibrator.calibration_result.pixels_per_mm
+                            y_mm = rel_y_pixels / calibrator.calibration_result.pixels_per_mm
+                            st.info(f"{label}: Pixel ({px}, {py}) = ({x_mm:.2f}, {y_mm:.2f}) mm from saved origin")
+                        else:
+                            st.info(f"{label}: Pixel ({px}, {py}) = ({rel_x_pixels}, {rel_y_pixels}) px from saved origin")
+                
+                # Confirmation
+                st.success(f"✅ **Used saved origin**: ({cox}, {coy}) from calibration")
+                
+            else:
+                st.error("❌ Failed to capture image from camera")
+
+    with col2:
+        st.subheader("📊 Detection Status")
+        
+        # Show camera calibration status
+        if camera.calibrator.calibration_result:
+            st.success("✅ Camera is calibrated")
+            
+            result = camera.calibrator.calibration_result
+            
+            st.metric("Images Used", len(camera.calibrator.calibration_images))
+            st.metric("Reprojection Error", f"{result.reprojection_error:.4f}")
+            
+            if result.pixels_per_mm:
+                st.metric("Scale Factor", f"{result.pixels_per_mm:.2f} px/mm")
+                mm_per_pixel = 1.0 / result.pixels_per_mm
+                st.metric("Resolution", f"{mm_per_pixel:.4f} mm/px")
+            
+            # Show camera matrix info
+            with st.expander("📋 Camera Matrix"):
+                st.code(f"""
+Camera Matrix:
+fx = {result.camera_matrix[0,0]:.2f}
+fy = {result.camera_matrix[1,1]:.2f}
+cx = {result.camera_matrix[0,2]:.2f}
+cy = {result.camera_matrix[1,2]:.2f}
+                """)
+            
+        else:
+            st.warning("⚠️ Camera not calibrated")
+            st.info("Go to calibration page to calibrate first")
+        
+        # Instructions
+        st.subheader("📋 How It Works")
+        st.info("""
+        **Camera-Based Origin:**
+        - Origin is stored in the camera object
+        - Persists from checkerboard calibration
+        - Uses camera's coordinate conversion methods
+        - Automatically handles scale conversion
+        
+        **For Accurate Results:**
+        - Keep camera position fixed
+        - Don't change camera settings after calibration
+        - Recalibrate if camera is moved
+        """)
+
+
+def get_calibrated_origin(calibrator, image_shape):
+    """Get the calibrated origin point or fallback to default."""
+    if calibrator.calibration_result and calibrator.calibration_images:
+        try:
+            # Get origin from first calibration image (first detected corner)
+            first_calib = calibrator.calibration_images[0]
+            if first_calib["corners"] is not None and len(first_calib["corners"]) > 0:
+                origin_point = tuple(first_calib["corners"][0].ravel().astype(int))
+                return origin_point
+        except Exception as e:
+            logger.warning(f"Could not get calibrated origin: {e}")
+
+    # Fallback to image center or default position
+    height, width = image_shape
+    return (width // 4, height // 4)  # Top-left quadrant as default

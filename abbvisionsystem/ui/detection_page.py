@@ -20,6 +20,33 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+def get_calibrated_origin(calibrator, image_shape):
+    """Get the calibrated origin point or fallback to default."""
+    # FIRST: Check if we have a saved origin point from calibration
+    if calibrator.origin_point:
+        logger.info(f"Using saved origin from calibrator: {calibrator.origin_point}")
+        return calibrator.origin_point
+    
+    # SECOND: Try to get from calibration images if available
+    if calibrator.calibration_result and calibrator.calibration_images:
+        try:
+            # Get origin from first calibration image (first detected corner)
+            first_calib = calibrator.calibration_images[0]
+            if first_calib["corners"] is not None and len(first_calib["corners"]) > 0:
+                origin_point = tuple(first_calib["corners"][0].ravel().astype(int))
+                # IMPORTANT: Save this origin back to calibrator for future use
+                calibrator.origin_point = origin_point
+                logger.info(f"Extracted and saved origin from calibration images: {origin_point}")
+                return origin_point
+        except Exception as e:
+            logger.warning(f"Could not get calibrated origin: {e}")
+
+    # THIRD: Fallback to default only if nothing else works
+    height, width = image_shape
+    fallback_origin = (width // 4, height // 4)
+    logger.warning(f"Using fallback origin: {fallback_origin}")
+    return fallback_origin
+
 
 def detection_system_page():
     """Main detection system interface with calibration-based coordinates."""
@@ -28,19 +55,34 @@ def detection_system_page():
         "Upload images or connect camera for real-time defect detection with calibrated measurements"
     )
 
-    # Initialize calibrator
+    # CRITICAL: Use the same calibrator instance as the calibration page
     if "main_calibrator" not in st.session_state:
         st.session_state.main_calibrator = CameraCalibrator()
         # Auto-load latest calibration if available
         try:
             latest_calibration = CalibrationManager.find_latest_calibration_file()
             if latest_calibration:
-                st.session_state.main_calibrator.load_calibration(latest_calibration)
+                st.session_state.main_calibrator.load_calibration_with_origin(latest_calibration)
                 st.session_state.loaded_calibration_file = latest_calibration
+                st.info(f"🎯 Auto-loaded calibration with origin: {st.session_state.main_calibrator.origin_point}")
         except Exception as e:
             logger.warning(f"Could not auto-load calibration: {e}")
 
     calibrator = st.session_state.main_calibrator
+
+    # SYNC: If we have calibration data from calibration page, sync it
+    if 'calibrator' in st.session_state:
+        # Use the calibrator from calibration page (session_state.calibrator)
+        calibrator = st.session_state.calibrator
+        st.session_state.main_calibrator = calibrator
+        st.info(f"🔄 Synced with calibration page - Origin: {calibrator.origin_point}")
+
+    # Show current origin status prominently
+    if calibrator.origin_point:
+        st.success(f"✅ **Using Calibrated Origin**: {calibrator.origin_point}")
+        st.info("🎯 This origin is from the checkerboard calibration and will be used for all coordinate calculations")
+    else:
+        st.warning("⚠️ No calibrated origin available. Go to Camera Calibration page first.")
 
     # Sidebar settings
     with st.sidebar:
@@ -166,7 +208,7 @@ def image_detection_interface(
 
                     st.image(
                         cv2.cvtColor(result_image, cv2.COLOR_BGR2RGB),
-                        use_column_width=True,
+                        use_container_width=True,  # Fixed: was use_column_width
                     )
 
                 except Exception as e:
@@ -174,7 +216,7 @@ def image_detection_interface(
                     st.image(
                         cv2.cvtColor(image, cv2.COLOR_BGR2RGB),
                         caption="Original Image",
-                        use_column_width=True,
+                        use_container_width=True,  # Fixed: was use_column_width
                     )
 
             with col2:
@@ -195,112 +237,6 @@ def image_detection_interface(
                     )
                 else:
                     st.warning("⚠️ Uncalibrated - showing pixel coordinates")
-
-        except Exception as e:
-            st.error(f"Error processing image: {str(e)}")
-
-
-def image_detection_interface(
-    calibrator,
-    model_type,
-    model_path,
-    conf_threshold,
-    iou_threshold,
-    show_coordinate_system,
-    show_measurements,
-    show_origin_lines,
-):
-    """Image upload detection interface."""
-    st.subheader("Upload Image for Detection")
-
-    # Image upload
-    uploaded_file = st.file_uploader(
-        "Choose an image file",
-        type=["jpg", "jpeg", "png", "bmp"],
-        key="detection_upload",
-    )
-
-    if uploaded_file is not None:
-        try:
-            # Convert uploaded file to image
-            file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-            image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-
-            if image is None:
-                st.error("Failed to load image. Please check the file format.")
-                return
-
-            # Display original image
-            col1, col2 = st.columns([2, 1])
-
-            with col1:
-                st.subheader("Detection Results")
-
-                # Load and run model with custom path
-                try:
-                    model = get_model_instance(model_type, model_path)
-
-                    # Run detection
-                    with st.spinner("Running detection..."):
-                        detections = model.predict(
-                            image,
-                            conf_threshold=conf_threshold,
-                            iou_threshold=iou_threshold,
-                        )
-
-                    # Process results with calibration-based coordinates
-                    result_image = process_detection_results(
-                        image,
-                        detections,
-                        calibrator,
-                        show_coordinate_system,
-                        show_measurements,
-                        show_origin_lines,
-                    )
-
-                    # Display result
-                    st.image(
-                        cv2.cvtColor(result_image, cv2.COLOR_BGR2RGB),
-                        use_column_width=True,
-                    )
-
-                except Exception as e:
-                    st.error(f"Detection failed: {str(e)}")
-                    st.image(
-                        cv2.cvtColor(image, cv2.COLOR_BGR2RGB),
-                        caption="Original Image",
-                        use_column_width=True,
-                    )
-
-            with col2:
-                st.subheader("📊 Detection Summary")
-
-                if (
-                    "detections" in locals()
-                    and detections
-                    and detections.get("num_detections", 0) > 0
-                ):
-                    display_detection_measurements(
-                        detections, calibrator, image.shape[:2]
-                    )
-                else:
-                    st.info("No objects detected")
-
-                # Show calibration info
-                st.subheader("📏 Measurement Info")
-                if calibrator.calibration_result:
-                    st.success(f"✅ Calibrated System")
-                    st.write(
-                        f"**Scale:** {calibrator.calibration_result.pixels_per_mm:.2f} pixels/mm"
-                    )
-                    st.write(
-                        f"**Resolution:** {1/calibrator.calibration_result.pixels_per_mm:.4f} mm/pixel"
-                    )
-                else:
-                    st.warning("⚠️ Uncalibrated - showing pixel coordinates")
-                    st.write(
-                        "Go to Camera Calibration to enable real-world measurements"
-                    )
 
         except Exception as e:
             st.error(f"Error processing image: {str(e)}")
@@ -410,7 +346,7 @@ def camera_detection_interface(
             with col_result:
                 st.image(
                     cv2.cvtColor(st.session_state.detection_result, cv2.COLOR_BGR2RGB),
-                    use_column_width=True,
+                    use_container_width=True,  # Fixed: was use_column_width
                 )
 
             with col_measurements:
@@ -464,19 +400,14 @@ def process_detection_results(
 
                 x1, y1, x2, y2 = map(int, box)
 
-                # Calculate object center and dimensions
-                center_x = (x1 + x2) // 2
-                center_y = (y1 + y2) // 2
+                # FIXED: Calculate true object center more accurately
+                center_x, center_y, angle = find_accurate_object_center(
+                    image, (x1, y1, x2, y2)
+                )
+
+                # Calculate bounding box dimensions
                 width = x2 - x1
                 height = y2 - y1
-
-                # Get object region for contour analysis
-                object_region = image[y1:y2, x1:x2]
-                if object_region.size > 0:
-                    # Find the most accurate object center using contours
-                    center_x, center_y, angle = find_object_center_and_orientation(
-                        object_region, (x1, y1)
-                    )
 
                 # Draw bounding box
                 class_id = detections["classes"][i] if "classes" in detections else 0
@@ -485,8 +416,9 @@ def process_detection_results(
                 )  # Red for defect, Green for normal
                 cv2.rectangle(result_image, (x1, y1), (x2, y2), color, 2)
 
-                # Draw object center
-                cv2.circle(result_image, (center_x, center_y), 4, (0, 0, 255), -1)
+                # Draw object center point - make it more visible
+                cv2.circle(result_image, (center_x, center_y), 6, (0, 0, 255), -1)  # Red filled circle
+                cv2.circle(result_image, (center_x, center_y), 8, (255, 255, 255), 2)  # White border
 
                 # Draw connection line to origin if requested
                 if show_origin_lines:
@@ -495,7 +427,7 @@ def process_detection_results(
                         (ox, oy),
                         (center_x, center_y),
                         (255, 255, 0),
-                        1,
+                        2,
                         cv2.LINE_AA,
                     )
 
@@ -508,7 +440,7 @@ def process_detection_results(
                         origin_point,
                         calibrator,
                         i + 1,
-                        angle if "angle" in locals() else 0,
+                        angle,
                     )
 
             except Exception as e:
@@ -518,21 +450,91 @@ def process_detection_results(
     return result_image
 
 
-def get_calibrated_origin(calibrator, image_shape):
-    """Get the calibrated origin point or fallback to default."""
-    if calibrator.calibration_result and calibrator.calibration_images:
-        try:
-            # Get origin from first calibration image (first detected corner)
-            first_calib = calibrator.calibration_images[0]
-            if first_calib["corners"] is not None and len(first_calib["corners"]) > 0:
-                origin_point = tuple(first_calib["corners"][0].ravel().astype(int))
-                return origin_point
-        except Exception as e:
-            logger.warning(f"Could not get calibrated origin: {e}")
-
-    # Fallback to image center or default position
-    height, width = image_shape
-    return (width // 4, height // 4)  # Top-left quadrant as default
+def find_accurate_object_center(image, bbox):
+    """Find accurate object center using multiple methods for better precision."""
+    x1, y1, x2, y2 = bbox
+    
+    # Method 1: Simple bounding box center (fallback)
+    bbox_center_x = (x1 + x2) // 2
+    bbox_center_y = (y1 + y2) // 2
+    
+    try:
+        # Extract the object region with some padding
+        padding = 5
+        y_start = max(0, y1 - padding)
+        y_end = min(image.shape[0], y2 + padding)
+        x_start = max(0, x1 - padding)
+        x_end = min(image.shape[1], x2 + padding)
+        
+        object_region = image[y_start:y_end, x_start:x_end]
+        
+        if object_region.size == 0:
+            return bbox_center_x, bbox_center_y, 0
+        
+        # Convert to grayscale
+        gray = cv2.cvtColor(object_region, cv2.COLOR_BGR2GRAY)
+        
+        # Method 2: Use edge detection to find object boundaries
+        edges = cv2.Canny(gray, 50, 150)
+        
+        # Find contours from edges
+        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if contours:
+            # Get the largest contour (most likely the main object)
+            largest_contour = max(contours, key=cv2.contourArea)
+            
+            # Method 3: Calculate moments for centroid
+            M = cv2.moments(largest_contour)
+            if M["m00"] != 0:
+                # Centroid coordinates relative to object region
+                cx_rel = int(M["m10"] / M["m00"])
+                cy_rel = int(M["m01"] / M["m00"])
+                
+                # Convert to absolute image coordinates
+                center_x = x_start + cx_rel
+                center_y = y_start + cy_rel
+                
+                # Ensure center is within the original bounding box
+                center_x = max(x1, min(x2, center_x))
+                center_y = max(y1, min(y2, center_y))
+                
+                # Calculate orientation using minimum area rectangle
+                rect = cv2.minAreaRect(largest_contour)
+                angle = rect[2]
+                
+                # Normalize angle
+                if rect[1][0] < rect[1][1]:
+                    angle = angle + 90
+                angle = angle % 180
+                
+                return center_x, center_y, angle
+        
+        # Method 4: Use template matching for better center detection
+        # Create a binary mask of the object
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        
+        # Find center of mass of binary region
+        y_coords, x_coords = np.where(binary > 0)
+        if len(x_coords) > 0 and len(y_coords) > 0:
+            center_x_rel = int(np.mean(x_coords))
+            center_y_rel = int(np.mean(y_coords))
+            
+            # Convert to absolute coordinates
+            center_x = x_start + center_x_rel
+            center_y = y_start + center_y_rel
+            
+            # Ensure center is within bounding box
+            center_x = max(x1, min(x2, center_x))
+            center_y = max(y1, min(y2, center_y))
+            
+            return center_x, center_y, 0
+            
+    except Exception as e:
+        logger.warning(f"Error in accurate center detection: {e}")
+    
+    # Fallback to geometric center of bounding box
+    return bbox_center_x, bbox_center_y, 0
 
 
 def draw_coordinate_system(image, origin_point, calibrator):
@@ -554,16 +556,7 @@ def draw_coordinate_system(image, origin_point, calibrator):
         image, (ox, oy), (ox, oy + axis_length), (0, 255, 0), 3, tipLength=0.1
     )
 
-    # Add labels (matching calibration style)
-    cv2.putText(
-        image,
-        "O(0,0)",
-        (ox - 30, oy - 15),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.7,
-        (255, 255, 0),
-        2,
-    )
+    # Add axis labels only (removed the O(0,0) label)
     cv2.putText(
         image,
         "X",
@@ -585,40 +578,66 @@ def draw_coordinate_system(image, origin_point, calibrator):
 
 
 def find_object_center_and_orientation(object_region, region_offset):
-    """Find accurate object center and orientation using contour analysis."""
+    """DEPRECATED: Use find_accurate_object_center instead."""
+    # This function is kept for backward compatibility but should not be used
+    return find_accurate_object_center_legacy(object_region, region_offset)
+
+
+def find_accurate_object_center_legacy(object_region, region_offset):
+    """Legacy function - improved version."""
     try:
         # Convert to grayscale
         gray = cv2.cvtColor(object_region, cv2.COLOR_BGR2GRAY)
 
-        # Threshold to create binary image
-        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        # Use multiple thresholding methods
+        methods = [
+            cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU),
+            cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY),
+            cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+        ]
 
-        # Find contours
-        contours, _ = cv2.findContours(
-            binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
+        best_center = None
+        best_area = 0
+        best_angle = 0
 
-        if contours:
-            # Get largest contour
-            largest_contour = max(contours, key=cv2.contourArea)
+        for _, binary in methods:
+            # Find contours
+            contours, _ = cv2.findContours(
+                binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )
 
-            # Get minimum area rectangle for orientation
-            rect = cv2.minAreaRect(largest_contour)
-            center = rect[0]
-            angle = rect[2]
+            if contours:
+                # Get largest contour
+                largest_contour = max(contours, key=cv2.contourArea)
+                area = cv2.contourArea(largest_contour)
 
+                if area > best_area:
+                    best_area = area
+                    
+                    # Calculate centroid using moments
+                    M = cv2.moments(largest_contour)
+                    if M["m00"] != 0:
+                        cx = M["m10"] / M["m00"]
+                        cy = M["m01"] / M["m00"]
+                        best_center = (cx, cy)
+                        
+                        # Get orientation
+                        rect = cv2.minAreaRect(largest_contour)
+                        best_angle = rect[2]
+                        
+                        # Normalize angle
+                        if rect[1][0] < rect[1][1]:
+                            best_angle = best_angle + 90
+                        best_angle = best_angle % 180
+
+        if best_center:
             # Convert to absolute coordinates
-            abs_center_x = int(center[0] + region_offset[0])
-            abs_center_y = int(center[1] + region_offset[1])
+            abs_center_x = int(best_center[0] + region_offset[0])
+            abs_center_y = int(best_center[1] + region_offset[1])
+            return abs_center_x, abs_center_y, best_angle
 
-            # Normalize angle
-            if rect[1][0] < rect[1][1]:
-                angle = angle + 90
-            angle = angle % 180
-
-            return abs_center_x, abs_center_y, angle
-    except:
-        pass
+    except Exception as e:
+        logger.warning(f"Error in legacy center detection: {e}")
 
     # Fallback to bounding box center
     h, w = object_region.shape[:2]

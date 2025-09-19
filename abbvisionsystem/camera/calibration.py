@@ -1,12 +1,14 @@
 """Camera calibration utilities for accurate measurements and distortion correction."""
 
+import os
+import json
+import logging
 import cv2
 import numpy as np
-import json
-import os
-import logging
 from typing import List, Tuple, Optional, Dict
 from dataclasses import dataclass
+
+import streamlit as st
 
 logger = logging.getLogger(__name__)
 
@@ -33,11 +35,19 @@ class CameraCalibrator:
         self.calibration_result = None
         self.chessboard_size = (39, 27)  # Default chessboard pattern
         self.square_size_mm = 10.0  # Default square size in mm
+        self.origin_point = None  # Store the origin point
+        self.pattern_rows = 27
+        self.pattern_cols = 39
+        self.square_size = 10.0
 
     def set_chessboard_pattern(self, rows: int, cols: int, square_size_mm: float):
         """Set chessboard calibration pattern parameters."""
         self.chessboard_size = (cols, rows)  # OpenCV expects (cols, rows)
         self.square_size_mm = square_size_mm
+        # Also update the individual attributes for consistency
+        self.pattern_rows = rows
+        self.pattern_cols = cols
+        self.square_size = square_size_mm
         logger.info(
             f"Chessboard pattern set to {cols}x{rows}, square size: {square_size_mm}mm"
         )
@@ -80,7 +90,7 @@ class CameraCalibrator:
         return processed_images
 
     def add_calibration_image(self, image: np.ndarray) -> bool:
-        """Add a calibration image to the dataset with robust corner detection."""
+        """Add a calibration image and set origin from first valid image."""
         # Get multiple preprocessed versions of the image
         processed_images = self._preprocess_image_for_detection(image)
 
@@ -159,6 +169,19 @@ class CameraCalibrator:
                         "detection_method": detection_method,
                     }
                 )
+
+                # CRITICAL: Set origin from first valid image - with proper type conversion
+                if len(self.calibration_images) == 1:
+                    # Set origin to the first corner (top-left of chessboard pattern)
+                    # Convert numpy types to regular Python int for JSON serialization
+                    origin_raw = refined_corners[0].ravel()
+                    self.origin_point = (int(origin_raw[0]), int(origin_raw[1]))
+                    logger.info(f"🎯 ORIGIN SET from first calibration image: {self.origin_point}")
+                    logger.info(f"🎯 Origin type: {type(self.origin_point)} with elements: {[type(x) for x in self.origin_point]}")
+                    
+                    # Store in a way that can be accessed from session state
+                    if hasattr(self, '_session_sync'):
+                        self._session_sync['origin_point'] = self.origin_point
 
                 logger.info(
                     f"Added calibration image {len(self.calibration_images)} using {detection_method}"
@@ -405,8 +428,7 @@ class CameraCalibrator:
         draw_camera_frame: bool = False,
     ) -> np.ndarray:
         """
-        Draw the detected chessboard pattern with enhanced visualization.
-        Similar to OpenCV tutorial but with additional features.
+        Draw the detected chessboard pattern with enhanced visualization INCLUDING ORIGIN.
         """
         # Get multiple preprocessed versions of the image
         processed_images = self._preprocess_image_for_detection(image)
@@ -453,13 +475,62 @@ class CameraCalibrator:
             # Draw chessboard corners - matching OpenCV tutorial
             cv2.drawChessboardCorners(result_image, self.chessboard_size, corners, True)
 
+            # CRITICAL: Draw the origin point (first corner) prominently
+            origin_point = tuple(corners[0].ravel().astype(int))
+            
+            # Draw large yellow circle for origin
+            cv2.circle(result_image, origin_point, 12, (0, 255, 255), -1)  # Yellow filled circle
+            cv2.circle(result_image, origin_point, 12, (0, 0, 0), 2)        # Black border
+            
+            # Draw origin label
+            cv2.putText(
+                result_image, "ORIGIN", 
+                (origin_point[0] - 30, origin_point[1] - 20),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2
+            )
+            cv2.putText(
+                result_image, "(0,0)", 
+                (origin_point[0] - 20, origin_point[1] + 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2
+            )
+
+            # Draw simple coordinate axes from origin
+            axis_length = 80
+            # X-axis (Red arrow)
+            cv2.arrowedLine(
+                result_image, origin_point, 
+                (origin_point[0] + axis_length, origin_point[1]), 
+                (0, 0, 255), 3, tipLength=0.1
+            )
+            # Y-axis (Green arrow)
+            cv2.arrowedLine(
+                result_image, origin_point, 
+                (origin_point[0], origin_point[1] + axis_length), 
+                (0, 255, 0), 3, tipLength=0.1
+            )
+            
+            # Axis labels
+            cv2.putText(
+                result_image, "X", 
+                (origin_point[0] + axis_length + 10, origin_point[1] + 5),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2
+            )
+            cv2.putText(
+                result_image, "Y", 
+                (origin_point[0] - 10, origin_point[1] + axis_length + 20),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2
+            )
+
+            # Show origin coordinates
+            detection_info += f" - Origin: {origin_point}"
+
             # Draw coordinate axes if calibration is available and requested
             if draw_axes and self.calibration_result is not None:
-                self._draw_coordinate_axes(result_image, corners, proc_img)
+                self._draw_coordinate_axes(result_image, corners, processed_images[0])
 
             # Draw 3D cube if requested and calibration is available
             if draw_cube and self.calibration_result is not None:
-                self._draw_3d_cube(result_image, corners, proc_img)
+                self._draw_3d_cube(result_image, corners, processed_images[0])
 
             if draw_camera_frame:
                 self._draw_camera_pinhole_frame(
@@ -471,8 +542,13 @@ class CameraCalibrator:
             quality_text = "✓ Good Quality" if is_valid else "⚠ Poor Quality"
             detection_info += f" - {quality_text}"
 
-            # Add corner numbering for debugging
-            self._add_corner_numbering(result_image, corners)
+            # Show if this is the stored origin
+            if self.origin_point and tuple(self.origin_point) == origin_point:
+                cv2.putText(
+                    result_image, "SAVED ORIGIN", 
+                    (origin_point[0] - 40, origin_point[1] - 40),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2
+                )
 
         # Add comprehensive info text
         info_texts = [detection_info]
@@ -485,6 +561,10 @@ class CameraCalibrator:
                     f"Scale: {self.calibration_result.pixels_per_mm:.2f} px/mm",
                 ]
             )
+
+        # Show stored origin info
+        if self.origin_point:
+            info_texts.append(f"Stored Origin: {self.origin_point}")
 
         # Draw pattern info
         info_texts.append(
@@ -510,172 +590,6 @@ class CameraCalibrator:
 
         return result_image
 
-    def _draw_coordinate_axes(
-        self, image: np.ndarray, corners: np.ndarray, gray: np.ndarray
-    ):
-        """Draw coordinate axes on the chessboard origin."""
-        if self.calibration_result is None:
-            return
-
-        try:
-            # Define axis points (origin + 3 axis endpoints)
-            axis_length = 3 * self.square_size_mm  # 3 squares length
-            axis_points = np.float32(
-                [
-                    [0, 0, 0],  # Origin
-                    [axis_length, 0, 0],  # X-axis (red)
-                    [0, axis_length, 0],  # Y-axis (green)
-                    [0, 0, -axis_length],  # Z-axis (blue)
-                ]
-            ).reshape(-1, 3)
-
-            # Project 3D points to image plane
-            # Use the first image's rotation and translation vectors
-            if (
-                self.calibration_result.rotation_vectors
-                and self.calibration_result.translation_vectors
-            ):
-                rvec = self.calibration_result.rotation_vectors[0]
-                tvec = self.calibration_result.translation_vectors[0]
-            else:
-                # Estimate pose for current image
-                objp = np.zeros(
-                    (self.chessboard_size[0] * self.chessboard_size[1], 3), np.float32
-                )
-                objp[:, :2] = np.mgrid[
-                    0 : self.chessboard_size[0], 0 : self.chessboard_size[1]
-                ].T.reshape(-1, 2)
-                objp *= self.square_size_mm
-
-                _, rvec, tvec = cv2.solvePnP(
-                    objp,
-                    corners,
-                    self.calibration_result.camera_matrix,
-                    self.calibration_result.distortion_coefficients,
-                )
-
-            # Project axis points
-            axis_img_points, _ = cv2.projectPoints(
-                axis_points,
-                rvec,
-                tvec,
-                self.calibration_result.camera_matrix,
-                self.calibration_result.distortion_coefficients,
-            )
-
-            # Convert to integer coordinates
-            origin = tuple(axis_img_points[0].ravel().astype(int))
-            x_end = tuple(axis_img_points[1].ravel().astype(int))
-            y_end = tuple(axis_img_points[2].ravel().astype(int))
-            z_end = tuple(axis_img_points[3].ravel().astype(int))
-
-            # Draw axes with different colors
-            cv2.arrowedLine(image, origin, x_end, (0, 0, 255), 3)  # X-axis: Red
-            cv2.arrowedLine(image, origin, y_end, (0, 255, 0), 3)  # Y-axis: Green
-            cv2.arrowedLine(image, origin, z_end, (255, 0, 0), 3)  # Z-axis: Blue
-
-            # Add axis labels
-            cv2.putText(
-                image, "X", x_end, cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2
-            )
-            cv2.putText(
-                image, "Y", y_end, cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2
-            )
-            cv2.putText(
-                image, "Z", z_end, cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2
-            )
-
-        except Exception as e:
-            logger.debug(f"Could not draw coordinate axes: {e}")
-
-    def _draw_3d_cube(self, image: np.ndarray, corners: np.ndarray, gray: np.ndarray):
-        """Draw a 3D cube on the chessboard for visualization."""
-        if self.calibration_result is None:
-            return
-
-        try:
-            # Define cube points
-            cube_size = 3 * self.square_size_mm
-            cube_points = np.float32(
-                [
-                    [0, 0, 0],
-                    [0, cube_size, 0],
-                    [cube_size, cube_size, 0],
-                    [cube_size, 0, 0],  # Bottom face
-                    [0, 0, -cube_size],
-                    [0, cube_size, -cube_size],
-                    [cube_size, cube_size, -cube_size],
-                    [cube_size, 0, -cube_size],  # Top face
-                ]
-            ).reshape(-1, 3)
-
-            # Estimate pose for current image
-            objp = np.zeros(
-                (self.chessboard_size[0] * self.chessboard_size[1], 3), np.float32
-            )
-            objp[:, :2] = np.mgrid[
-                0 : self.chessboard_size[0], 0 : self.chessboard_size[1]
-            ].T.reshape(-1, 2)
-            objp *= self.square_size_mm
-
-            _, rvec, tvec = cv2.solvePnP(
-                objp,
-                corners,
-                self.calibration_result.camera_matrix,
-                self.calibration_result.distortion_coefficients,
-            )
-
-            # Project cube points
-            cube_img_points, _ = cv2.projectPoints(
-                cube_points,
-                rvec,
-                tvec,
-                self.calibration_result.camera_matrix,
-                self.calibration_result.distortion_coefficients,
-            )
-
-            cube_img_points = np.int32(cube_img_points).reshape(-1, 2)
-
-            # Draw bottom face in green
-            cv2.drawContours(image, [cube_img_points[:4]], -1, (0, 255, 0), -2)
-
-            # Draw top face in blue
-            cv2.drawContours(image, [cube_img_points[4:8]], -1, (255, 0, 0), -2)
-
-            # Draw vertical edges in red
-            for i, j in zip(range(4), range(4, 8)):
-                cv2.line(
-                    image,
-                    tuple(cube_img_points[i]),
-                    tuple(cube_img_points[j]),
-                    (0, 0, 255),
-                    2,
-                )
-
-        except Exception as e:
-            logger.debug(f"Could not draw 3D cube: {e}")
-
-    def _add_corner_numbering(
-        self, image: np.ndarray, corners: np.ndarray, max_numbers: int = 20
-    ):
-        """Add numbering to corners for debugging purposes."""
-        corners_2d = corners.reshape(-1, 2)
-
-        # Only show numbering for first few corners to avoid clutter
-        num_to_show = min(max_numbers, len(corners_2d))
-
-        for i in range(num_to_show):
-            center = tuple(corners_2d[i].astype(int))
-            cv2.putText(
-                image,
-                str(i),
-                (center[0] + 5, center[1] - 5),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.4,
-                (255, 255, 0),
-                1,
-            )
-
     def visualize_calibration(
         self,
         image: np.ndarray,
@@ -684,12 +598,71 @@ class CameraCalibrator:
         draw_camera_frame: bool = False,
     ) -> np.ndarray:
         """
-        Enhanced visualization with pattern drawing capabilities.
+        Enhanced visualization with pattern drawing capabilities INCLUDING ORIGIN.
         This is the main method to call for visualization.
         """
         return self.draw_chessboard_pattern(
             image, draw_axes, draw_cube, draw_camera_frame
         )
+
+    def draw_origin_on_image(self, image: np.ndarray) -> np.ndarray:
+        """Draw the stored origin point on any image."""
+        result_image = image.copy()
+        
+        if self.origin_point:
+            ox, oy = self.origin_point
+            
+            # Draw large yellow circle for origin
+            cv2.circle(result_image, (ox, oy), 12, (0, 255, 255), -1)  # Yellow filled circle
+            cv2.circle(result_image, (ox, oy), 12, (0, 0, 0), 2)        # Black border
+            
+            # Draw origin label
+            cv2.putText(
+                result_image, "ORIGIN", 
+                (ox - 30, oy - 20),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2
+            )
+            cv2.putText(
+                result_image, "(0,0)", 
+                (ox - 20, oy + 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2
+            )
+
+            # Draw coordinate axes
+            axis_length = 80
+            # X-axis (Red arrow)
+            cv2.arrowedLine(
+                result_image, (ox, oy), 
+                (ox + axis_length, oy), 
+                (0, 0, 255), 3, tipLength=0.1
+            )
+            # Y-axis (Green arrow)
+            cv2.arrowedLine(
+                result_image, (ox, oy), 
+                (ox, oy + axis_length), 
+                (0, 255, 0), 3, tipLength=0.1
+            )
+            
+            # Axis labels
+            cv2.putText(
+                result_image, "X", 
+                (ox + axis_length + 10, oy + 5),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2
+            )
+            cv2.putText(
+                result_image, "Y", 
+                (ox - 10, oy + axis_length + 20),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2
+            )
+            
+            # Add coordinates text
+            cv2.putText(
+                result_image, f"Origin: ({ox}, {oy})", 
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2
+            )
+        
+        return result_image
 
     def save_calibration(self, filepath: str) -> bool:
         """Save calibration data to file."""
@@ -761,62 +734,426 @@ class CameraCalibrator:
             logger.error(f"Failed to load calibration: {e}")
             return False
 
+    def save_calibration_with_origin(self, filepath: str) -> bool:
+        """Save calibration results including origin point to JSON file."""
+        if not self.calibration_result:
+            logger.error("No calibration result to save")
+            return False
+
+        try:
+            import json
+            from datetime import datetime
+
+            # Helper function to convert numpy types to Python types
+            def convert_numpy_types(obj):
+                if isinstance(obj, np.ndarray):
+                    return obj.tolist()
+                elif isinstance(obj, (np.int64, np.int32, np.integer)):
+                    return int(obj)
+                elif isinstance(obj, (np.float64, np.float32, np.floating)):
+                    return float(obj)
+                elif isinstance(obj, tuple):
+                    return [convert_numpy_types(item) for item in obj]
+                elif isinstance(obj, list):
+                    return [convert_numpy_types(item) for item in obj]
+                else:
+                    return obj
+
+            # Prepare calibration data including origin - with proper type conversion
+            calibration_data = {
+                "camera_matrix": convert_numpy_types(self.calibration_result.camera_matrix),
+                "distortion_coefficients": convert_numpy_types(self.calibration_result.distortion_coefficients),
+                "reprojection_error": convert_numpy_types(self.calibration_result.reprojection_error),
+                "image_size": convert_numpy_types(self.calibration_result.image_size),
+                "pixels_per_mm": convert_numpy_types(self.calibration_result.pixels_per_mm) if self.calibration_result.pixels_per_mm else None,
+                "calibration_date": str(self.calibration_result.calibration_date) if self.calibration_result.calibration_date else datetime.now().isoformat(),
+                "chessboard_size": convert_numpy_types(self.chessboard_size),
+                "square_size_mm": convert_numpy_types(self.square_size_mm),
+                "origin_point": convert_numpy_types(self.origin_point) if self.origin_point else None,
+                "pattern_rows": convert_numpy_types(self.pattern_rows),
+                "pattern_cols": convert_numpy_types(self.pattern_cols),
+                "square_size": convert_numpy_types(self.square_size),
+                "num_calibration_images": convert_numpy_types(len(self.calibration_images))
+            }
+
+            # Ensure directory exists
+            os.makedirs(os.path.dirname(filepath), exist_ok=True)
+
+            # Save to file with proper error handling
+            with open(filepath, 'w') as f:
+                json.dump(calibration_data, f, indent=2, default=convert_numpy_types)
+
+            logger.info(f"Calibration with origin saved to {filepath}")
+            logger.info(f"Origin point saved: {self.origin_point}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to save calibration: {e}")
+            logger.error(f"Error details: {str(e)}")
+            
+            # Additional debugging for JSON serialization issues
+            if "JSON serializable" in str(e):
+                logger.error("JSON Serialization issue - checking data types:")
+                logger.error(f"Origin point type: {type(self.origin_point)}")
+                if self.origin_point:
+                    logger.error(f"Origin elements types: {[type(x) for x in self.origin_point]}")
+                logger.error(f"Pattern rows type: {type(self.pattern_rows)}")
+                logger.error(f"Pattern cols type: {type(self.pattern_cols)}")
+        
+        return False
+
+    def load_calibration_with_origin(self, filepath: str) -> bool:
+        """Load calibration results including origin point from JSON file."""
+        try:
+            import json
+            import numpy as np
+
+            # Check if file exists
+            if not os.path.exists(filepath):
+                logger.error(f"Calibration file does not exist: {filepath}")
+                return False
+
+            # Check file size
+            if os.path.getsize(filepath) == 0:
+                logger.error(f"Calibration file is empty: {filepath}")
+                return False
+
+            with open(filepath, 'r') as f:
+                try:
+                    data = json.load(f)
+                except json.JSONDecodeError as e:
+                    logger.error(f"Invalid JSON in calibration file {filepath}: {e}")
+                    logger.error(f"JSON error at line {e.lineno}, column {e.colno}")
+                    return False
+
+            # Validate required fields
+            required_fields = ["camera_matrix", "distortion_coefficients", "reprojection_error", "image_size"]
+            for field in required_fields:
+                if field not in data:
+                    logger.error(f"Missing required field '{field}' in calibration file")
+                    return False
+
+            # Restore calibration result
+            self.calibration_result = CalibrationResult(
+                camera_matrix=np.array(data["camera_matrix"]),
+                distortion_coefficients=np.array(data["distortion_coefficients"]),
+                rotation_vectors=[],  # These aren't typically saved/needed
+                translation_vectors=[],  # These aren't typically saved/needed
+                reprojection_error=float(data["reprojection_error"]),
+                image_size=tuple(data["image_size"]),
+                pixels_per_mm=float(data["pixels_per_mm"]) if data.get("pixels_per_mm") else None,
+                calibration_date=str(data.get("calibration_date"))
+            )
+
+            # Restore pattern settings with defaults
+            self.chessboard_size = tuple(data.get("chessboard_size", [39, 27]))
+            self.square_size_mm = float(data.get("square_size_mm", 10.0))
+            
+            # Restore individual pattern attributes
+            self.pattern_rows = int(data.get("pattern_rows", self.chessboard_size[1]))
+            self.pattern_cols = int(data.get("pattern_cols", self.chessboard_size[0]))
+            self.square_size = float(data.get("square_size", self.square_size_mm))
+
+            # CRITICAL: Restore origin point with type conversion
+            if data.get("origin_point"):
+                origin_data = data["origin_point"]
+                self.origin_point = (int(origin_data[0]), int(origin_data[1]))
+            else:
+                self.origin_point = None
+
+            logger.info(f"Calibration with origin loaded from {filepath}")
+            logger.info(f"Origin point loaded: {self.origin_point}")
+            logger.info(f"Pattern size: {self.chessboard_size}, Square size: {self.square_size_mm}mm")
+            
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to load calibration: {e}")
+            logger.error(f"File path: {filepath}")
+            return False
+
+    def load_origin_only(self, filepath: str) -> bool:
+        """Load just the origin point from a saved file."""
+        try:
+            import json
+            
+            with open(filepath, 'r') as f:
+                data = json.load(f)
+            
+            if data.get('type') == 'origin_only':
+                self.origin_point = tuple(data["origin_point"])
+                
+                # Also load pattern settings if available
+                if 'pattern_size' in data:
+                    self.chessboard_size = tuple(data["pattern_size"])
+                if 'square_size_mm' in data:
+                    self.square_size_mm = data["square_size_mm"]
+                    self.square_size = data["square_size_mm"]
+                
+                logger.info(f"Origin point loaded: {self.origin_point}")
+                return True
+            else:
+                logger.error("File is not an origin-only file")
+                return False
+            
+        except Exception as e:
+            logger.error(f"Failed to load origin: {e}")
+            return False
+
+    def _draw_coordinate_axes(self, image: np.ndarray, corners: np.ndarray, gray_image: np.ndarray) -> None:
+        """Draw 3D coordinate axes on the detected chessboard."""
+        if self.calibration_result is None:
+            return
+        
+        try:
+            # Define 3D points for coordinate axes (in chessboard coordinate system)
+            axis_length = 3  # Length in chessboard squares
+            axis_points = np.float32([
+                [0, 0, 0],  # Origin
+                [axis_length, 0, 0],  # X-axis
+                [0, axis_length, 0],  # Y-axis
+                [0, 0, -axis_length]  # Z-axis (negative for top-down view)
+            ]).reshape(-1, 3)
+            
+            # Scale by square size
+            axis_points *= self.square_size_mm
+            
+            # Project 3D points to image plane
+            rvec = np.zeros((3, 1))  # Assume chessboard is flat (no rotation)
+            tvec = np.zeros((3, 1))  # Translation will be estimated
+            
+            # Use solvePnP to get pose
+            object_points = self._generate_object_points()
+            success, rvec, tvec = cv2.solvePnP(
+                object_points, corners, 
+                self.calibration_result.camera_matrix,
+                self.calibration_result.distortion_coefficients
+            )
+            
+            if success:
+                # Project axis points
+                axis_img_points, _ = cv2.projectPoints(
+                    axis_points, rvec, tvec, 
+                    self.calibration_result.camera_matrix,
+                    self.calibration_result.distortion_coefficients
+                )
+                
+                axis_img_points = axis_img_points.reshape(-1, 2).astype(int)
+                
+                # Draw axes
+                origin = tuple(axis_img_points[0])
+                x_end = tuple(axis_img_points[1])
+                y_end = tuple(axis_img_points[2])
+                z_end = tuple(axis_img_points[3])
+                
+                # Draw axes with different colors
+                cv2.arrowedLine(image, origin, x_end, (0, 0, 255), 3, tipLength=0.1)  # Red X
+                cv2.arrowedLine(image, origin, y_end, (0, 255, 0), 3, tipLength=0.1)  # Green Y
+                cv2.arrowedLine(image, origin, z_end, (255, 0, 0), 3, tipLength=0.1)  # Blue Z
+                
+                # Add labels
+                cv2.putText(image, "X", (x_end[0] + 10, x_end[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                cv2.putText(image, "Y", (y_end[0] + 10, y_end[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                cv2.putText(image, "Z", (z_end[0] + 10, z_end[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+                
+        except Exception as e:
+            logger.warning(f"Failed to draw coordinate axes: {e}")
+
+    def _draw_3d_cube(self, image: np.ndarray, corners: np.ndarray, gray_image: np.ndarray) -> None:
+        """Draw a 3D cube on the detected chessboard."""
+        if self.calibration_result is None:
+            return
+        
+        try:
+            # Define 3D points for a cube (in chessboard coordinate system)
+            cube_size = 3  # Size in chessboard squares
+            cube_points = np.float32([
+                [0, 0, 0], [cube_size, 0, 0], [cube_size, cube_size, 0], [0, cube_size, 0],  # Bottom face
+                [0, 0, -cube_size], [cube_size, 0, -cube_size], [cube_size, cube_size, -cube_size], [0, cube_size, -cube_size]  # Top face
+            ]).reshape(-1, 3)
+            
+            # Scale by square size
+            cube_points *= self.square_size_mm
+            
+            # Get pose using solvePnP
+            object_points = self._generate_object_points()
+            success, rvec, tvec = cv2.solvePnP(
+                object_points, corners,
+                self.calibration_result.camera_matrix,
+                self.calibration_result.distortion_coefficients
+            )
+            
+            if success:
+                # Project cube points
+                cube_img_points, _ = cv2.projectPoints(
+                    cube_points, rvec, tvec, 
+                    self.calibration_result.camera_matrix,
+                    self.calibration_result.distortion_coefficients
+                )
+                
+                cube_img_points = cube_img_points.reshape(-1, 2).astype(int)
+                
+                # Draw cube edges
+                # Bottom face
+                cv2.drawContours(image, [cube_img_points[:4]], -1, (0, 255, 0), 2)
+                # Top face
+                cv2.drawContours(image, [cube_img_points[4:8]], -1, (0, 255, 0), 2)
+                # Vertical edges
+                for i in range(4):
+                    cv2.line(image, tuple(cube_img_points[i]), tuple(cube_img_points[i+4]), (0, 255, 0), 2)
+                
+        except Exception as e:
+            logger.warning(f"Failed to draw 3D cube: {e}")
+
+    def _draw_camera_pinhole_frame(self, image: np.ndarray, corners: np.ndarray, gray_image: np.ndarray) -> None:
+        """Draw camera pinhole model visualization."""
+        if self.calibration_result is None:
+            return
+        
+        try:
+            # Get camera center and principal point
+            cx = self.calibration_result.camera_matrix[0, 2]
+            cy = self.calibration_result.camera_matrix[1, 2]
+            fx = self.calibration_result.camera_matrix[0, 0]
+            fy = self.calibration_result.camera_matrix[1, 1]
+            
+            # Draw principal point
+            cv2.circle(image, (int(cx), int(cy)), 5, (255, 255, 0), -1)
+            cv2.putText(image, "Principal Point", (int(cx) + 10, int(cy)), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+            
+            # Draw field of view indicators
+            height, width = image.shape[:2]
+            cv2.rectangle(image, (0, 0), (width-1, height-1), (255, 255, 0), 2)
+            
+            # Add focal length info
+            cv2.putText(image, f"fx: {fx:.1f}", (10, height-60), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+            cv2.putText(image, f"fy: {fy:.1f}", (10, height-30), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+            
+        except Exception as e:
+            logger.warning(f"Failed to draw camera frame: {e}")
+
+    def _generate_object_points(self) -> np.ndarray:
+        """Generate 3D object points for the chessboard pattern."""
+        # Create 3D points for chessboard corners
+        object_points = np.zeros((self.chessboard_size[0] * self.chessboard_size[1], 3), np.float32)
+        object_points[:, :2] = np.mgrid[0:self.chessboard_size[0], 0:self.chessboard_size[1]].T.reshape(-1, 2)
+        object_points *= self.square_size_mm
+        return object_points
+
+    def _validate_corners(self, corners: np.ndarray, image_shape: tuple) -> bool:
+        """Validate the quality of detected corners."""
+        if corners is None or len(corners) == 0:
+            return False
+        
+        try:
+            # Check if corners are within image bounds
+            height, width = image_shape
+            corners_2d = corners.reshape(-1, 2)
+            
+            if np.any(corners_2d < 0) or np.any(corners_2d[:, 0] >= width) or np.any(corners_2d[:, 1] >= height):
+                return False
+            
+            # Check corner distribution (should be spread across image)
+            x_range = np.max(corners_2d[:, 0]) - np.min(corners_2d[:, 0])
+            y_range = np.max(corners_2d[:, 1]) - np.min(corners_2d[:, 1])
+            
+            # Pattern should cover reasonable portion of image
+            min_coverage = 0.3  # 30% of image
+            if x_range < width * min_coverage or y_range < height * min_coverage:
+                return False
+            
+            return True
+            
+        except Exception as e:
+            logger.warning(f"Corner validation failed: {e}")
+            return False
+
     def get_detection_tips(self) -> List[str]:
-        """Get tips for better chessboard detection."""
-        return [
-            "Ensure the chessboard is printed with high contrast (pure black/white)",
-            "Use matte paper to avoid reflections",
-            "Make sure the chessboard is completely flat",
-            "Provide even lighting without shadows or reflections",
-            "Ensure all corners are visible in the image",
-            "Keep the chessboard pattern sharp (avoid motion blur)",
-            "Try different angles and positions",
-            "Check that the pattern size matches your settings",
-            "For the pattern shown: use 19x13 inner corners",
-            "Square size should match your actual printed size",
+        """Get tips for improving pattern detection."""
+        tips = [
+            "Ensure the chessboard pattern is flat and not warped",
+            "Use good, even lighting without shadows or reflections",
+            "Make sure all corners of the pattern are visible",
+            "Keep the camera steady and in focus",
+            "Try different angles and positions for the chessboard",
+            "Ensure the pattern size settings match your physical chessboard",
+            "Use a high-contrast chessboard (black and white squares)",
+            "Avoid motion blur by keeping the pattern stationary during capture"
         ]
+        return tips
 
-    def process_calibration_images_with_display(
-        self, image_paths: List[str]
-    ) -> List[np.ndarray]:
-        """
-        Process multiple calibration images and return visualization results.
-        Similar to the OpenCV tutorial approach.
-        """
-        visualization_results = []
+    def debug_chessboard_detection(self, image: np.ndarray) -> dict:
+        """Debug chessboard detection with detailed information."""
+        debug_info = {
+            "image_shape": image.shape,
+            "chessboard_size": self.chessboard_size,
+            "detection_attempts": [],
+            "preprocessing_results": []
+        }
+        
+        # Get preprocessed images
+        processed_images = self._preprocess_image_for_detection(image)
+        
+        for i, proc_img in enumerate(processed_images):
+            debug_info["preprocessing_results"].append({
+                "method": f"Preprocessing_{i}",
+                "mean_intensity": float(np.mean(proc_img)),
+                "std_intensity": float(np.std(proc_img)),
+                "min_intensity": int(np.min(proc_img)),
+                "max_intensity": int(np.max(proc_img))
+            })
+        
+        # Try detection with different methods
+        flag_combinations = [
+            (cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE, "ADAPTIVE_THRESH + NORMALIZE"),
+            (cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE + cv2.CALIB_CB_FILTER_QUADS, "ADAPTIVE + NORMALIZE + FILTER"),
+            (cv2.CALIB_CB_ADAPTIVE_THRESH, "ADAPTIVE_THRESH"),
+            (cv2.CALIB_CB_NORMALIZE_IMAGE, "NORMALIZE"),
+            (cv2.CALIB_CB_FAST_CHECK, "FAST_CHECK"),
+            (0, "NO_FLAGS"),
+        ]
+        
+        for i, proc_img in enumerate(processed_images):
+            for flags, flag_name in flag_combinations:
+                try:
+                    ret, corners = cv2.findChessboardCorners(proc_img, self.chessboard_size, flags=flags)
+                    debug_info["detection_attempts"].append({
+                        "preprocessing": i,
+                        "flags": flag_name,
+                        "success": bool(ret),
+                        "corners_found": len(corners) if ret else 0
+                    })
+                except Exception as e:
+                    debug_info["detection_attempts"].append({
+                        "preprocessing": i,
+                        "flags": flag_name,
+                        "success": False,
+                        "error": str(e)
+                    })
+        
+        return debug_info
 
-        for i, image_path in enumerate(image_paths):
-            try:
-                # Read image
-                img = cv2.imread(image_path)
-                if img is None:
-                    logger.warning(f"Could not load image: {image_path}")
-                    continue
-
-                # Try to add as calibration image
-                success = self.add_calibration_image(img)
-
-                # Create visualization
-                vis_img = self.draw_chessboard_pattern(
-                    img, draw_axes=True, draw_cube=False
-                )
-
-                # Add status text
-                status = "✓ Added" if success else "✗ Failed"
-                cv2.putText(
-                    vis_img,
-                    f"Image {i+1}: {status}",
-                    (10, vis_img.shape[0] - 20),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    (0, 255, 0) if success else (0, 0, 255),
-                    2,
-                )
-
-                visualization_results.append(vis_img)
-
-            except Exception as e:
-                logger.error(f"Error processing {image_path}: {e}")
-                continue
-
-        return visualization_results
+def detection_page():
+    """Detection page that uses the calibrated origin."""
+    st.title("🔍 Object Detection")
+    
+    # Get calibration data from session state
+    calibration_data = st.session_state.get('calibration_data', {})
+    camera = st.session_state.get('camera')
+    
+    # Show calibration status at the top
+    st.subheader("📐 Calibration Status")
+    
+    if calibration_data.get('has_calibration', False):
+        # ...existing status display...
+        
+        # Add origin source information
+        origin = calibration_data.get('origin_point')
+        if origin:
+            st.info(f"🎯 **Using Saved Origin**: {origin} (from checkerboard calibration)")
+            st.success("✅ This origin point was saved from the checkerboard pattern and can be used without the checkerboard present")
+        
+        # ...rest of existing code...
