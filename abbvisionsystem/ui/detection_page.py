@@ -23,19 +23,15 @@ logger = logging.getLogger(__name__)
 
 def get_calibrated_origin(calibrator, image_shape):
     """Get the calibrated origin point or fallback to default."""
-    # FIRST: Check if we have a saved origin point from calibration
     if calibrator.origin_point:
         logger.info(f"Using saved origin from calibrator: {calibrator.origin_point}")
         return calibrator.origin_point
 
-    # SECOND: Try to get from calibration images if available
     if calibrator.calibration_result and calibrator.calibration_images:
         try:
-            # Get origin from first calibration image (first detected corner)
             first_calib = calibrator.calibration_images[0]
             if first_calib["corners"] is not None and len(first_calib["corners"]) > 0:
                 origin_point = tuple(first_calib["corners"][0].ravel().astype(int))
-                # IMPORTANT: Save this origin back to calibrator for future use
                 calibrator.origin_point = origin_point
                 logger.info(
                     f"Extracted and saved origin from calibration images: {origin_point}"
@@ -44,7 +40,6 @@ def get_calibrated_origin(calibrator, image_shape):
         except Exception as e:
             logger.warning(f"Could not get calibrated origin: {e}")
 
-    # THIRD: Fallback to default only if nothing else works
     height, width = image_shape
     fallback_origin = (width // 4, height // 4)
     logger.warning(f"Using fallback origin: {fallback_origin}")
