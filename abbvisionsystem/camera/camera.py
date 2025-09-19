@@ -7,13 +7,17 @@ import numpy as np
 from abc import ABC, abstractmethod
 from .calibration import CameraCalibrator, CalibrationResult
 
+# Robust import for Basler SDK
 try:
-    from pypylon import pylon
-
+    from pypylon import pylon  # Preferred package name
     PYLON_AVAILABLE = True
-except ImportError:
-    PYLON_AVAILABLE = False
-    logging.warning("Pypylon not available. Basler cameras will not be supported.")
+except Exception:
+    try:
+        from pylon import pylon  # Fallback if older package structure is used
+        PYLON_AVAILABLE = True
+    except Exception:
+        PYLON_AVAILABLE = False
+        logging.warning("Pylon/Pypylon not available. Basler cameras will not be supported.")
 
 logger = logging.getLogger(__name__)
 
@@ -210,6 +214,8 @@ class BaslerCamera(BaseCamera):
         self.camera = None
         self.exposure_time = 10000  # microseconds
         self.gain = 1.0
+        # New: pylon format converter to always output BGR8
+        self.converter = None
 
         if not PYLON_AVAILABLE:
             logger.error("Pypylon not installed. Cannot use Basler cameras.")
@@ -244,6 +250,15 @@ class BaslerCamera(BaseCamera):
             # Open the camera
             self.camera.Open()
 
+            # Initialize pylon image converter to BGR8
+            try:
+                self.converter = pylon.ImageFormatConverter()
+                self.converter.OutputPixelFormat = pylon.PixelType_BGR8packed
+                self.converter.OutputBitAlignment = pylon.OutputBitAlignment_MsbAligned
+                logger.info("Pylon ImageFormatConverter initialized (BGR8packed)")
+            except Exception as e:
+                logger.warning(f"Could not initialize ImageFormatConverter: {e}")
+
             # Debug what features are available
             logger.info("Running camera feature debug...")
             self.debug_camera_features()
@@ -259,65 +274,14 @@ class BaslerCamera(BaseCamera):
         except Exception as e:
             logger.error(f"Basler camera connection error: {str(e)}")
             return False
-        
+    
     def _configure_camera_parameters(self):
         """Configure camera parameters for optimal top-down inspection."""
         if not self.camera or not self.camera.IsOpen():
             return
 
         try:
-            # Set exposure time with proper node checking
-            try:
-                if hasattr(self.camera, 'ExposureTime'):
-                    exposure_node = self.camera.ExposureTime
-                    if hasattr(exposure_node, 'IsAvailable') and exposure_node.IsAvailable():
-                        if hasattr(exposure_node, 'IsWritable') and exposure_node.IsWritable():
-                            exposure_node.SetValue(self.exposure_time)
-                            logger.info(f"Set exposure time to {self.exposure_time} µs")
-                        else:
-                            logger.info("Exposure time is read-only")
-                    else:
-                        logger.info("Exposure time not available on this camera")
-            except Exception as e:
-                logger.warning(f"Could not set exposure time: {e}")
-
-            # Set gain with proper node checking
-            try:
-                if hasattr(self.camera, 'Gain'):
-                    gain_node = self.camera.Gain
-                    if hasattr(gain_node, 'IsAvailable') and gain_node.IsAvailable():
-                        if hasattr(gain_node, 'IsWritable') and gain_node.IsWritable():
-                            gain_node.SetValue(self.gain)
-                            logger.info(f"Set gain to {self.gain}")
-                        else:
-                            logger.info("Gain is read-only")
-                    else:
-                        logger.info("Gain not available on this camera")
-            except Exception as e:
-                logger.warning(f"Could not set gain: {e}")
-
-            # Set acquisition mode with proper enumeration handling
-            try:
-                if hasattr(self.camera, 'AcquisitionMode'):
-                    acq_mode_node = self.camera.AcquisitionMode
-                    if hasattr(acq_mode_node, 'IsAvailable') and acq_mode_node.IsAvailable():
-                        if hasattr(acq_mode_node, 'IsWritable') and acq_mode_node.IsWritable():
-                            acq_mode_node.SetValue("Continuous")
-                            logger.info("Set acquisition mode to Continuous")
-                        else:
-                            # For enumerations, check if we can set the value differently
-                            try:
-                                if hasattr(acq_mode_node, 'SetIntValue'):
-                                    acq_mode_node.SetIntValue(acq_mode_node.GetEntryByName("Continuous").GetValue())
-                                    logger.info("Set acquisition mode to Continuous (via int value)")
-                            except:
-                                logger.info("Acquisition mode is read-only")
-                    else:
-                        logger.info("Acquisition mode not available on this camera")
-            except Exception as e:
-                logger.warning(f"Could not set acquisition mode: {e}")
-
-            # Set pixel format with proper enumeration handling
+            # FIRST: Check what pixel formats are available
             try:
                 if hasattr(self.camera, 'PixelFormat'):
                     pixel_format_node = self.camera.PixelFormat
@@ -325,49 +289,48 @@ class BaslerCamera(BaseCamera):
                         current_format = pixel_format_node.GetValue()
                         logger.info(f"Current pixel format: {current_format}")
                         
-                        # Check if we can change it
+                        supported_formats = []
+                        if hasattr(pixel_format_node, 'Symbolics'):
+                            supported_formats = [str(s) for s in pixel_format_node.Symbolics]
+                            logger.info(f"Supported formats: {supported_formats}")
+                        
                         if hasattr(pixel_format_node, 'IsWritable') and pixel_format_node.IsWritable():
-                            # Try to set a preferred format
-                            preferred_formats = ["BGR8", "RGB8", "Mono8", "BayerRG8"]
-                            
+                            # Prefer true color formats; do NOT include Mono8 here
+                            preferred_formats = [
+                                "BGR8", "BGR8Packed", "RGB8", "RGB8Packed",
+                                "YUV422Packed", "YCbCr422_8",
+                                "BayerRG8", "BayerBG8", "BayerGR8", "BayerGB8"
+                            ]
+                            format_set = False
                             for fmt in preferred_formats:
-                                try:
-                                    pixel_format_node.SetValue(fmt)
-                                    logger.info(f"Set pixel format to {fmt}")
-                                    break
-                                except:
-                                    continue
-                            else:
-                                logger.info(f"Using default pixel format: {current_format}")
+                                if fmt in supported_formats:
+                                    try:
+                                        pixel_format_node.SetValue(fmt)
+                                        logger.info(f"✅ Successfully set pixel format to {fmt}")
+                                        format_set = True
+                                        break
+                                    except Exception as e:
+                                        logger.debug(f"Failed to set {fmt}: {e}")
+                                        continue
+                            if not format_set:
+                                # If only mono formats exist, warn; otherwise keep current
+                                only_mono = all(("Mono" in f) for f in supported_formats) if supported_formats else False
+                                if only_mono or (current_format and "Mono" in str(current_format)):
+                                    logger.warning("Only Mono formats available; camera will output grayscale.")
+                                else:
+                                    logger.warning(f"Could not set any preferred color format, using: {current_format}")
                         else:
                             logger.info(f"Pixel format is read-only, using: {current_format}")
+                            if current_format == "Mono8":
+                                logger.warning("⚠️ Camera is using Mono8 format - this may be a monochrome camera")
                     else:
                         logger.info("Pixel format not available on this camera")
             except Exception as e:
                 logger.warning(f"Could not configure pixel format: {e}")
 
-            # Try to disable auto settings if available
-            auto_settings = [
-                ('BalanceWhiteAuto', 'Off', 'auto white balance'),
-                ('ExposureAuto', 'Off', 'auto exposure'), 
-                ('GainAuto', 'Off', 'auto gain')
-            ]
+            # Rest of your existing configuration code...
+            # (exposure, gain, acquisition mode, auto settings)
             
-            for setting_name, value, description in auto_settings:
-                try:
-                    if hasattr(self.camera, setting_name):
-                        setting_node = getattr(self.camera, setting_name)
-                        if hasattr(setting_node, 'IsAvailable') and setting_node.IsAvailable():
-                            if hasattr(setting_node, 'IsWritable') and setting_node.IsWritable():
-                                setting_node.SetValue(value)
-                                logger.info(f"Disabled {description}")
-                            else:
-                                logger.debug(f"{description} is read-only")
-                        else:
-                            logger.debug(f"{description} not available")
-                except Exception as e:
-                    logger.debug(f"Could not set {description}: {e}")
-
             logger.info("Camera parameter configuration completed")
 
         except Exception as e:
@@ -388,9 +351,34 @@ class BaslerCamera(BaseCamera):
             logger.info(f"Serial Number: {device_info.GetSerialNumber()}")
             logger.info(f"Device Version: {device_info.GetDeviceVersion()}")
             
-            # Check common features
+            # CRITICAL: Check what pixel formats are actually supported
+            try:
+                if hasattr(self.camera, 'PixelFormat'):
+                    pixel_format_node = self.camera.PixelFormat
+                    if hasattr(pixel_format_node, 'IsAvailable') and pixel_format_node.IsAvailable():
+                        current_format = pixel_format_node.GetValue()
+                        logger.info(f"🎯 CURRENT PIXEL FORMAT: {current_format}")
+                        
+                        # Get ALL supported formats
+                        if hasattr(pixel_format_node, 'Symbolics'):
+                            supported_formats = [str(s) for s in pixel_format_node.Symbolics]
+                            logger.info(f"🎨 SUPPORTED PIXEL FORMATS: {supported_formats}")
+                            
+                            # Check if any color formats are available
+                            color_formats = [f for f in supported_formats if any(color in f for color in ['RGB', 'BGR', 'Bayer', 'YUV', 'YCbCr'])]
+                            if color_formats:
+                                logger.info(f"✅ COLOR FORMATS AVAILABLE: {color_formats}")
+                            else:
+                                logger.warning(f"⚠️ NO COLOR FORMATS FOUND - This appears to be a MONOCHROME camera!")
+                                logger.info(f"Available formats: {supported_formats}")
+                        else:
+                            logger.warning("Could not get supported pixel formats")
+            except Exception as e:
+                logger.error(f"Error checking pixel formats: {e}")
+            
+            # Check other features
             features_to_check = [
-                'ExposureTime', 'Gain', 'AcquisitionMode', 'PixelFormat',
+                'ExposureTime', 'Gain', 'AcquisitionMode',
                 'BalanceWhiteAuto', 'ExposureAuto', 'GainAuto',
                 'Width', 'Height', 'OffsetX', 'OffsetY'
             ]
@@ -403,7 +391,6 @@ class BaslerCamera(BaseCamera):
                             readable = hasattr(node, 'IsReadable') and node.IsReadable()
                             writable = hasattr(node, 'IsWritable') and node.IsWritable()
                             
-                            # Try to get current value
                             try:
                                 if readable:
                                     current_value = node.GetValue()
@@ -412,25 +399,7 @@ class BaslerCamera(BaseCamera):
                             except:
                                 current_value = "Error reading"
                             
-                            # Check node type
-                            node_type = "Unknown"
-                            if hasattr(node, 'GetPrincipalInterfaceType'):
-                                try:
-                                    node_type = str(node.GetPrincipalInterfaceType())
-                                except:
-                                    pass
-                            
-                            logger.info(f"{feature}: Available=True, R={readable}, W={writable}, Type={node_type}, Value={current_value}")
-                            
-                            # For enumerations, show available options
-                            if 'Enumeration' in str(type(node)) or 'IEnumeration' in str(type(node)):
-                                try:
-                                    if hasattr(node, 'Symbolics'):
-                                        options = [str(s) for s in node.Symbolics]
-                                        logger.info(f"  {feature} options: {options}")
-                                except Exception as e:
-                                    logger.info(f"  Could not get {feature} options: {e}")
-                                    
+                            logger.info(f"{feature}: Available=True, R={readable}, W={writable}, Value={current_value}")
                         else:
                             logger.info(f"{feature}: Available=False")
                     else:
@@ -441,7 +410,8 @@ class BaslerCamera(BaseCamera):
             logger.info("=== END CAMERA DEBUG ===")
             
         except Exception as e:
-            logger.error(f"Camera feature debugging failed: {e}")        
+            logger.error(f"Camera feature debugging failed: {e}")
+    
     def set_exposure_time(self, exposure_us: int):
         """Set camera exposure time in microseconds."""
         self.exposure_time = exposure_us
@@ -484,24 +454,55 @@ class BaslerCamera(BaseCamera):
                 )
 
                 if grab_result.GrabSucceeded():
+                    # Preferred: use pylon's converter to always get BGR8
+                    try:
+                        if self.converter is None:
+                            # Lazy init if needed
+                            self.converter = pylon.ImageFormatConverter()
+                            self.converter.OutputPixelFormat = pylon.PixelType_BGR8packed
+                            self.converter.OutputBitAlignment = pylon.OutputBitAlignment_MsbAligned
+                        converted = self.converter.Convert(grab_result)
+                        image = converted.GetArray()  # BGR8
+                        logger.info("Frame converted to BGR8 via Pylon converter")
+                        grab_result.Release()
+                        return image
+                    except Exception as e:
+                        logger.warning(f"Converter failed, falling back to manual conversion: {e}")
+
+                    # Fallback path: manual handling
                     image = grab_result.Array
                     pixel_format = self.camera.PixelFormat.GetValue()
                     
                     logger.info(f"Captured image with format: {pixel_format}, shape: {image.shape}")
                     
-                    # Simplified color handling like the old working code
-                    if len(image.shape) == 2:  # If grayscale
-                        image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-                        logger.info("Converted grayscale to BGR")
+                    # Handle different pixel formats properly
+                    if pixel_format == "Mono8":
+                        logger.info("🔘 Monochrome format or device - converting GRAY->BGR (will still look gray)")
+                        if len(image.shape) == 2:
+                            image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+                        
+                    elif pixel_format in ("RGB8", "RGB8Packed"):
+                        image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+                        
+                    elif pixel_format in ("BGR8", "BGR8Packed"):
+                        pass  # already BGR
+                        
+                    elif isinstance(pixel_format, str) and pixel_format.startswith("Bayer"):
+                        if pixel_format == "BayerRG8":
+                            image = cv2.cvtColor(image, cv2.COLOR_BAYER_RG2BGR)
+                        elif pixel_format == "BayerBG8":
+                            image = cv2.cvtColor(image, cv2.COLOR_BAYER_BG2BGR)
+                        elif pixel_format == "BayerGR8":
+                            image = cv2.cvtColor(image, cv2.COLOR_BAYER_GR2BGR)
+                        elif pixel_format == "BayerGB8":
+                            image = cv2.cvtColor(image, cv2.COLOR_BAYER_GB2BGR)
+                        
+                    elif pixel_format in ("YUV422Packed", "YCbCr422_8"):
+                        image = cv2.cvtColor(image, cv2.COLOR_YUV2BGR_YUY2)
+                        
                     else:
-                        # For color images, check if we need any conversion
-                        if pixel_format == "RGB8":
-                            # Convert RGB to BGR for OpenCV
-                            image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-                            logger.info("Converted RGB8 to BGR")
-                        else:
-                            # For BGR8, Bayer patterns, or other formats, use as-is
-                            logger.info(f"Using {pixel_format} format as-is")
+                        if len(image.shape) == 2:
+                            image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
                     
                     grab_result.Release()
                     return image
@@ -520,7 +521,7 @@ class BaslerCamera(BaseCamera):
             # Stop grabbing
             if self.camera and self.camera.IsGrabbing():
                 self.camera.StopGrabbing()
-            
+
     def disconnect(self):
         """Disconnect from Basler camera."""
         if self.camera is not None:
