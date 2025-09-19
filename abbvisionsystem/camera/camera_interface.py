@@ -34,13 +34,13 @@ def camera_calibration_interface():
         # Chessboard pattern configuration
         st.subheader("Chessboard Pattern")
         cols = st.number_input(
-            "Columns (inner corners)", min_value=4, max_value=50, value=39
+            "Columns (inner corners)", min_value=4, max_value=50, value=5
         )
         rows = st.number_input(
-            "Rows (inner corners)", min_value=4, max_value=50, value=27
+            "Rows (inner corners)", min_value=4, max_value=50, value=8
         )
         square_size = st.number_input(
-            "Square Size (mm)", min_value=1.0, max_value=100.0, value=10.0, step=0.1
+            "Square Size (mm)", min_value=1.0, max_value=100.0, value=25.0, step=0.1
         )
 
         if st.button("Update Pattern Settings"):
