@@ -245,25 +245,39 @@ class YOLODefectModel(BaseModel):
             if not os.path.exists(self.model_path):
                 logger.warning(f"Model file not found: {self.model_path}")
 
-                # Try to find alternative
-                alternative_path = self._auto_discover_model()
-                if alternative_path != self.model_path and os.path.exists(
-                    alternative_path
-                ):
-                    logger.info(f"Using alternative model: {alternative_path}")
-                    self.model_path = alternative_path
-                elif self.model_path in self.get_fallback_models():
-                    logger.info(f"Downloading pretrained model: {self.model_path}")
+                # Enhanced fallback logic for pipeline v2 models
+                pipeline_v2_paths = [
+                    "trained_models/enhanced_yolo_defect_detector/weights/best.pt",
+                    "trained_models/enhanced_yolo_defect_detector/weights/last.pt",
+                    "runs/detect/train/weights/best.pt",
+                    "runs/detect/train/weights/last.pt",
+                ]
+
+                # Try pipeline v2 specific paths first
+                for alt_path in pipeline_v2_paths:
+                    if os.path.exists(alt_path):
+                        logger.info(f"Found pipeline v2 model: {alt_path}")
+                        self.model_path = alt_path
+                        break
                 else:
-                    logger.error(f"No valid model found: {self.model_path}")
-                    return False
+                    # Try auto-discovery
+                    alternative_path = self._auto_discover_model()
+                    if alternative_path != self.model_path and os.path.exists(
+                        alternative_path
+                    ):
+                        logger.info(f"Using alternative model: {alternative_path}")
+                        self.model_path = alternative_path
+                    elif self.model_path in self.get_fallback_models():
+                        logger.info(f"Downloading pretrained model: {self.model_path}")
+                    else:
+                        logger.error(f"No valid model found: {self.model_path}")
+                        return False
 
             self.model = YOLO(self.model_path)
             self.loaded = True
 
             logger.info(f"YOLO model loaded successfully: {self.model_path}")
             return True
-
         except Exception as e:
             logger.error(f"Failed to load YOLO model: {str(e)}")
             return False
