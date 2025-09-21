@@ -1,8 +1,10 @@
 """Defect detection model implementation for industrial inspection."""
 
 import os
+import glob
 import json
 import logging
+from datetime import datetime
 import numpy as np
 import tensorflow as tf
 import cv2
@@ -11,21 +13,43 @@ from abbvisionsystem.models.base_model import BaseModel
 logger = logging.getLogger(__name__)
 
 
-class DefectDetectionModel(BaseModel):
+class ResnetModel(BaseModel):
     """Model for industrial defect detection/classification."""
 
     def __init__(
         self,
-        model_path="trained_models/final_defect_model.h5",
-        class_mapping_path="trained_models/class_mapping.json",
+        model_path: str | None = None,
+        class_mapping_path: str = "trained_models/class_mapping.json",
     ):
-        super().__init__(model_path)
+        """Initialize classification model.
+
+        If a model_path is provided and exists, use it. Otherwise, trigger
+        BaseModel auto-discovery to locate the best available classification
+        model in the workspace.
+        """
+        # Trigger auto-discovery when path is None or doesn't exist
+        use_path = model_path if (model_path and os.path.exists(model_path)) else None
+        super().__init__(use_path)
+
+        # If BaseModel auto-discovery selected a path, prefer that
+        resolved_path = (
+            self.model_path if getattr(self, "model_path", None) else model_path
+        )
+
         self.class_mapping_path = class_mapping_path
         self.model = None
         self.class_mapping = {}
+        # Compute model_info_path from resolved model path or fallback directory
+        info_base_dir = (
+            os.path.dirname(resolved_path)
+            if resolved_path
+            else os.path.dirname(class_mapping_path)
+        )
+        info_base_name = os.path.splitext(
+            os.path.basename(resolved_path or "resnet_defect_classifier")
+        )[0]
         self.model_info_path = os.path.join(
-            os.path.dirname(model_path),
-            f"{os.path.splitext(os.path.basename(model_path))[0]}_info.json",
+            info_base_dir, f"{info_base_name}_info.json"
         )
 
         # Default categories (will be overridden by class_mapping if available)
@@ -33,6 +57,75 @@ class DefectDetectionModel(BaseModel):
             0: {"name": "Normal", "id": 0},
             1: {"name": "Defect", "id": 1},
         }
+
+    # ---- BaseModel abstract methods (discovery helpers) ----
+    @classmethod
+    def get_default_search_patterns(cls):
+        """Default locations/patterns for classification models."""
+        return [
+            # Preferred enhanced classifier in repo
+            "trained_models/enhanced_resnet_defect_classifier.keras",
+            "trained_models/enhanced_resnet_defect_classifier.h5",
+            # Generic patterns
+            "trained_models/*.keras",
+            "trained_models/*.h5",
+            "trained_models/*/*.keras",
+            "trained_models/*/*.h5",
+            # Possible root-level artifacts
+            "*.keras",
+            "*.h5",
+        ]
+
+    @classmethod
+    def get_fallback_models(cls):
+        """Fallback models to try when discovery finds nothing."""
+        return [
+            "trained_models/enhanced_resnet_defect_classifier.keras",
+            "trained_models/enhanced_resnet_defect_classifier.h5",
+            "trained_models/final_defect_model.h5",
+        ]
+
+    @classmethod
+    def get_available_models(cls):
+        """Discover available classification models.
+
+        Returns a list of dicts with at least: name, path, size_mb,
+        modified_timestamp, date_str, model_type.
+        """
+        models: list[dict] = []
+        found = set()
+        for pattern in cls.get_default_search_patterns():
+            for path in glob.glob(pattern):
+                if (
+                    os.path.isfile(path)
+                    and path not in found
+                    and path.endswith((".keras", ".h5"))
+                ):
+                    try:
+                        size_mb = os.path.getsize(path) / (1024 * 1024)
+                        mtime = os.path.getmtime(path)
+                        date_str = datetime.fromtimestamp(mtime).strftime(
+                            "%Y-%m-%d %H:%M"
+                        )
+                        name = os.path.basename(path).replace("_", " ")
+                        models.append(
+                            {
+                                "name": name,
+                                "path": path,
+                                "size_mb": size_mb,
+                                "modified_timestamp": mtime,
+                                "date_str": date_str,
+                                "model_type": "ResNet Classification",
+                            }
+                        )
+                        found.add(path)
+                    except Exception as e:
+                        logger.debug(f"Skipping candidate model {path}: {e}")
+                        continue
+
+        # Sort newest first
+        models.sort(key=lambda x: x.get("modified_timestamp", 0), reverse=True)
+        return models
 
     def load(self):
         """Load the defect detection model supporting both .h5 and .keras formats."""
@@ -63,7 +156,9 @@ class DefectDetectionModel(BaseModel):
                     logger.info(
                         f"Attempting to load model from keras path: {keras_model_path}"
                     )
-                    self.model = tf.keras.models.load_model(keras_model_path)
+                    self.model = tf.keras.models.load_model(
+                        keras_model_path, compile=False
+                    )
                     model_loaded = True
                     logger.info(f"Successfully loaded model from: {keras_model_path}")
                 except Exception as e:
@@ -77,7 +172,9 @@ class DefectDetectionModel(BaseModel):
                 if os.path.exists(keras_path):
                     try:
                         logger.info(f"Attempting to load model from: {keras_path}")
-                        self.model = tf.keras.models.load_model(keras_path)
+                        self.model = tf.keras.models.load_model(
+                            keras_path, compile=False
+                        )
                         model_loaded = True
                         logger.info(f"Successfully loaded model from: {keras_path}")
                     except Exception as e:
@@ -94,7 +191,7 @@ class DefectDetectionModel(BaseModel):
                 logger.info(
                     f"Attempting to load model from original path: {self.model_path}"
                 )
-                self.model = tf.keras.models.load_model(self.model_path)
+                self.model = tf.keras.models.load_model(self.model_path, compile=False)
                 logger.info(f"Successfully loaded model from: {self.model_path}")
 
             # Load class mapping if available
@@ -116,7 +213,7 @@ class DefectDetectionModel(BaseModel):
             logger.error(f"Failed to load model: {str(e)}")
             return False
 
-    def predict(self, image):
+    def predict(self, image, conf_threshold=None, iou_threshold=None, **kwargs):
         """Run prediction with the defect detection model."""
         if not self.loaded:
             logger.warning("Model not loaded. Call load() first.")

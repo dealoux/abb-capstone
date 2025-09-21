@@ -96,7 +96,7 @@ def detection_system_page():
 
         # Model type selection
         model_type = st.selectbox(
-            "Detection Framework", ["defect_yolo", "defect_classification"], index=0
+            "Detection Framework", ["model_yolo", "model_resnet"], index=0
         )
 
         # Model selection (delegated to component) - FIXED
@@ -186,6 +186,9 @@ def image_detection_interface(
                 return
 
             col1, col2 = st.columns([2, 1])
+
+            # Ensure detections is defined even if detection fails
+            detections = None
 
             with col1:
                 st.subheader("Detection Results")

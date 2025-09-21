@@ -8,7 +8,7 @@ from abbvisionsystem.preprocessing.preprocessing import (
     prepare_for_detection,
     apply_image_enhancement,
 )
-from abbvisionsystem.models.defect_detection_model import DefectDetectionModel
+from abbvisionsystem.models.resnet_model import ResnetModel
 from abbvisionsystem.models.yolo_model import YOLODefectModel
 from abbvisionsystem.utils.visualization import draw_detection_summary
 

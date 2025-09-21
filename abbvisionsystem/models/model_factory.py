@@ -3,7 +3,7 @@
 import logging
 from typing import Dict, Optional
 from abbvisionsystem.models.yolo_model import YOLODefectModel
-from abbvisionsystem.models.defect_detection_model import DefectDetectionModel
+from abbvisionsystem.models.resnet_model import ResnetModel
 
 logger = logging.getLogger(__name__)
 
@@ -12,8 +12,8 @@ class ModelFactory:
     """Factory for creating and managing models."""
 
     MODEL_CLASSES = {
-        "defect_yolo": YOLODefectModel,
-        "defect_classification": DefectDetectionModel,
+        "model_yolo": YOLODefectModel,
+        "model_resnet": ResnetModel,
     }
 
     @classmethod

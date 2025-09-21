@@ -1,0 +1,56 @@
+{
+  "metrics": {
+    "ResNet": {
+      "model": "ResNet",
+      "accuracy": 0.3548387096774194,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0,
+      "roc_auc": 0.0,
+      "pr_auc": 0.44594768219245356
+    },
+    "YOLO_Enhanced": {
+      "model": "YOLO Enhanced",
+      "accuracy": 0.6451612903225806,
+      "precision": 0.6451612903225806,
+      "recall": 1.0,
+      "f1": 0.7843137254901961,
+      "roc_auc": 0.0,
+      "pr_auc": 0.44594768219245356
+    },
+    "YOLO_LabelStudio": {
+      "model": "YOLO LabelStudio",
+      "accuracy": 0.0,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0,
+      "roc_auc": 0.0,
+      "pr_auc": 0.6451612903225806
+    }
+  },
+  "best_thresholds": {
+    "ResNet": {
+      "threshold": 0.0,
+      "precision": 0.6451612903225806,
+      "recall": 1.0,
+      "f1": 0.7843137254901961
+    },
+    "YOLO_Enhanced": {
+      "threshold": 0.0,
+      "precision": 0.6451612903225806,
+      "recall": 1.0,
+      "f1": 0.7843137254901961
+    },
+    "YOLO_LabelStudio": {
+      "threshold": 0.0,
+      "precision": 0.6451612903225806,
+      "recall": 1.0,
+      "f1": 0.7843137254901961
+    }
+  },
+  "model_paths": {
+    "ResNet": "/Users/ducle/Library/CloudStorage/OneDrive-RMITUniversity/Courses/OENG1183 - Capstone A/abb-capstone/trained_models/enhanced_resnet_defect_classifier.keras",
+    "YOLO_Enhanced": "/Users/ducle/Library/CloudStorage/OneDrive-RMITUniversity/Courses/OENG1183 - Capstone A/abb-capstone/trained_models/enhanced_yolo_defect_detector/weights/best.pt",
+    "YOLO_LabelStudio": "/Users/ducle/Library/CloudStorage/OneDrive-RMITUniversity/Courses/OENG1183 - Capstone A/abb-capstone/trained_models/labelstudio_chocopie_detector/weights/best.pt"
+  }
+}

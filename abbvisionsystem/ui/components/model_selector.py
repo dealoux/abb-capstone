@@ -207,7 +207,7 @@ class ModelSelector:
     @staticmethod
     def render_model_selection(model_type: str) -> Optional[str]:
         """Render model selection interface and return selected model path."""
-        if model_type != "defect_yolo":
+        if model_type != "model_yolo":
             return None  # Only YOLO models have selection for now
 
         st.subheader("🤖 YOLO Model Selection")
